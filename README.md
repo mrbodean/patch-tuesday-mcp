@@ -47,7 +47,12 @@ Other things it deliberately gets right:
 
 - **EPSS scores** (FIRST.org) — data-driven 30-day exploitation probability per CVE, for sharper "patch this first" ranking than severity alone
 - **CISA KEV integration** — flag CVEs on the Known Exploited Vulnerabilities catalog, with federal remediation due dates (`kev=True` filter)
+- **Supersedence chains** — walk the "this KB replaces that KB" links Microsoft publishes in CVRF remediation data (`include_chain=True` on a KB lookup), so an assistant never recommends an obsolete patch
 - Cross-month keyword search
+
+#### Possible future add-on: inferred supersedence graph
+
+Microsoft's `Supercedence` field is sparse — it's often missing for older KBs and many cumulative updates. Filling those gaps requires *heuristic inference* (e.g., "a newer cumulative update for the same product implicitly supersedes the older one"), which in turn means correctly classifying update types (cumulative vs. security-only vs. servicing-stack) across Microsoft's inconsistent product naming, ideally backed by a precomputed KB graph rebuilt monthly after each Patch Tuesday. This is deliberately **not** implemented today: wrongly marking a patch as superseded would cause someone to skip a patch they actually need, and that failure mode is worse than an incomplete chain. If it lands, inferred links will be explicitly labeled (`"inferred": true`) and kept separate from Microsoft-stated ones. If you'd use this, please open an issue — demand is what will prioritize it.
 
 ## Requirements
 
