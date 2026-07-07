@@ -19,24 +19,39 @@ class RateLimitMiddleware:
         app: The wrapped ASGI application.
         requests_per_minute: Sustained request budget per client IP. The
             bucket capacity equals this value, refilled continuously.
-        on_request: Optional callback invoked with the client IP for each
+        on_request: Optional callback invoked with (client IP, path) for each
             allowed request (used for telemetry).
+        exempt_paths: Paths that bypass rate limiting and the on_request
+            callback (health probes must not consume budget or be counted).
     """
 
-    def __init__(self, app, requests_per_minute: int = 60, on_request=None):
+    def __init__(
+        self,
+        app,
+        requests_per_minute: int = 60,
+        on_request=None,
+        exempt_paths: frozenset[str] = frozenset({"/health"}),
+    ):
         self.app = app
         self.rpm = requests_per_minute
         self.on_request = on_request
+        self.exempt_paths = exempt_paths
         # ip -> [tokens, last_refill_monotonic]
         self._buckets: dict[str, list[float]] = {}
 
     def _client_ip(self, scope) -> str:
-        headers = {k.decode("latin-1").lower(): v.decode("latin-1")
-                   for k, v in scope.get("headers", [])}
+        headers = {
+            k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])
+        }
         forwarded = headers.get("x-forwarded-for")
         if forwarded:
-            # First hop is the original client (ACA ingress appends its own)
-            return forwarded.split(",")[0].strip()
+            # Rightmost entry is the hop appended by the trusted ingress
+            # proxy in front of us. Earlier entries are client-supplied and
+            # spoofable — trusting them would let anyone bypass the limit
+            # and flood the bucket table.
+            ip = forwarded.split(",")[-1].strip()
+            if ip:
+                return ip
         client = scope.get("client")
         return client[0] if client else "unknown"
 
@@ -61,15 +76,24 @@ class RateLimitMiddleware:
     def _prune_if_needed(self, now: float) -> None:
         if len(self._buckets) < PRUNE_THRESHOLD:
             return
-        stale = [
-            ip for ip, (_, last) in self._buckets.items()
-            if now - last > STALE_BUCKET_SECONDS
-        ]
+        stale = [ip for ip, (_, last) in self._buckets.items() if now - last > STALE_BUCKET_SECONDS]
         for ip in stale:
             del self._buckets[ip]
+        # Hard cap: still full of fresh buckets means a flood of distinct
+        # client IPs — evict the least recently seen so memory stays bounded
+        if len(self._buckets) >= PRUNE_THRESHOLD:
+            excess = len(self._buckets) - PRUNE_THRESHOLD + 1
+            oldest = sorted(self._buckets, key=lambda ip: self._buckets[ip][1])[:excess]
+            for ip in oldest:
+                del self._buckets[ip]
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or self.rpm <= 0:
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        if path in self.exempt_paths:
             await self.app(scope, receive, send)
             return
 
@@ -91,5 +115,5 @@ class RateLimitMiddleware:
             return
 
         if self.on_request is not None:
-            self.on_request(ip)
+            self.on_request(ip, path)
         await self.app(scope, receive, send)

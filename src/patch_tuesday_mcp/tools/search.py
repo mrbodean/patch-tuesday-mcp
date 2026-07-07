@@ -1,7 +1,11 @@
 """Unified search tool for querying MSRC security updates (Patch Tuesday)."""
 
+import asyncio
 import re
 import time
+from typing import Annotated
+
+from pydantic import Field
 
 from .. import telemetry
 from ..feeds import enrichment, msrc_api
@@ -10,6 +14,7 @@ from ..models.vulnerability import (
     SEVERITY_ORDER,
     MonthlyRelease,
     Vulnerability,
+    compute_stats,
     sort_vulnerabilities,
 )
 
@@ -36,11 +41,11 @@ async def msrc_search(
     exploited: bool | None = None,
     publicly_disclosed: bool | None = None,
     kev: bool | None = None,
-    min_epss: float | None = None,
-    min_cvss: float | None = None,
+    min_epss: Annotated[float | None, Field(ge=0, le=1)] = None,
+    min_cvss: Annotated[float | None, Field(ge=0, le=10)] = None,
     include_chain: bool = False,
-    limit: int = 10,
-    offset: int = 0,
+    limit: Annotated[int, Field(ge=0, le=MAX_LIMIT)] = 10,
+    offset: Annotated[int, Field(ge=0)] = 0,
     include_stats: bool = False,
 ) -> dict:
     """Search Microsoft security updates (Patch Tuesday) from the official MSRC API.
@@ -61,7 +66,7 @@ async def msrc_search(
       across all months, returns KBs, affected products, CVSS, description,
       FAQs, EPSS score, and KEV status
     - Find which CVEs a KB article fixes (kb="5094123" or kb="KB5094123") --
-      scans recent months
+      scans recent months, or a specific month when combined with month=
     - Check whether a KB has been superseded by newer patches (kb="5087538",
       include_chain=True) -- walks Microsoft-stated supersedence links
     - Find KEV-listed CVEs this month (kev=True) -- confirmed exploited, with
@@ -84,10 +89,12 @@ async def msrc_search(
             filters and returns full detail for that single CVE, searching
             across all months automatically.
         kb: Optional KB article number (e.g. "5094123" or "KB5094123"). Fast
-            path: returns all CVEs fixed by that KB, scanning the most recent
-            months (up to 6).
+            path: returns the CVEs fixed by that KB, scanning the most recent
+            months (up to 6), or only the given month when month= is also set.
+            Honors limit/offset; other filters are ignored.
         month: Optional monthly release to search, formatted "2026-Apr" or
-            "2026-04". Defaults to the latest available release.
+            "2026-04". Defaults to the latest available release. Combined
+            with kb=, restricts the KB lookup to that month.
         product: Optional product name filter (case-insensitive partial match
             against affected product names, e.g. "Windows Server 2022").
         severity: Optional maximum-severity filter. Valid values: Critical,
@@ -122,6 +129,8 @@ async def msrc_search(
         - stats: (only when include_stats=True) aggregate counts
         - supersedence_chain / chain_complete: (only for kb= lookups with
           include_chain=True) the walked chain, newest to oldest
+        - error / error_kind: (only on failure) a message plus a category
+          (invalid_input, not_found, upstream)
     """
     start = time.perf_counter()
     result = await _search_impl(
@@ -146,6 +155,7 @@ async def msrc_search(
         result.get("filters_applied", {}),
         result.get("total_found", 0),
         (time.perf_counter() - start) * 1000,
+        error_kind=result.get("error_kind", ""),
     )
     return result
 
@@ -173,7 +183,7 @@ async def _search_impl(
 
     # --- KB fast path: which CVEs does this KB fix ---
     if kb:
-        return await _lookup_kb(kb, include_chain)
+        return await _lookup_kb(kb, include_chain, month, limit, offset)
 
     filters_applied = _build_filters_summary(
         query=query,
@@ -193,8 +203,7 @@ async def _search_impl(
         severity = severity.capitalize()
         if severity not in SEVERITY_ORDER:
             return _error(
-                f"Invalid severity: {severity!r}. "
-                f"Valid values: {', '.join(SEVERITY_ORDER)}",
+                f"Invalid severity: {severity!r}. Valid values: {', '.join(SEVERITY_ORDER)}",
                 filters_applied,
             )
 
@@ -202,10 +211,7 @@ async def _search_impl(
     if month is not None:
         month_id = msrc_api.normalize_month_id(month)
         if month_id is None:
-            return _error(
-                f"Invalid month: {month!r}. Use formats like '2026-Apr' or '2026-04'.",
-                filters_applied,
-            )
+            return _invalid_month_error(month, filters_applied)
 
     limit = max(0, min(limit, MAX_LIMIT))
     offset = max(0, offset)
@@ -216,8 +222,12 @@ async def _search_impl(
         release = await msrc_api.fetch_month(month_id)
     except MsrcApiError as exc:
         if "not found" in str(exc):
-            return _error(f"No security update release found for {month_id}.", filters_applied)
-        return _error(str(exc), filters_applied)
+            return _error(
+                f"No security update release found for {month_id}.",
+                filters_applied,
+                kind="not_found",
+            )
+        return _error(str(exc), filters_applied, kind="upstream")
 
     # Enrich the whole month (not just the returned page) so KEV/EPSS
     # filtering and sorting stay consistent across pagination
@@ -243,17 +253,17 @@ async def _search_impl(
         "filters_applied": filters_applied,
     }
     if include_stats:
-        response["stats"] = MonthlyRelease(
-            id=release.id, vulnerabilities=matched
-        ).stats()
+        response["stats"] = compute_stats(matched)
     return response
 
 
 async def _enrich(vulnerabilities: list[Vulnerability]) -> None:
     """Attach KEV and EPSS data in place. Best-effort: fetch failures leave
     the enrichment fields unset and never raise."""
-    kev_map = await enrichment.fetch_kev()
-    epss_map = await enrichment.fetch_epss([v.cve for v in vulnerabilities])
+    kev_map, epss_map = await asyncio.gather(
+        enrichment.fetch_kev(),
+        enrichment.fetch_epss([v.cve for v in vulnerabilities]),
+    )
     for v in vulnerabilities:
         kev_entry = kev_map.get(v.cve)
         if kev_entry is not None:
@@ -275,17 +285,21 @@ async def _lookup_cve(cve: str) -> dict:
     try:
         month_id = await msrc_api.find_month_for_cve(cve)
         if month_id is None:
-            return _error(f"{cve} was not found in the MSRC Security Update Guide.",
-                          filters_applied)
+            return _error(
+                f"{cve} was not found in the MSRC Security Update Guide.",
+                filters_applied,
+                kind="not_found",
+            )
         release = await msrc_api.fetch_month(month_id)
     except MsrcApiError as exc:
-        return _error(str(exc), filters_applied)
+        return _error(str(exc), filters_applied, kind="upstream")
 
     vuln = next((v for v in release.vulnerabilities if v.cve == cve), None)
     if vuln is None:
         return _error(
             f"{cve} is listed under {month_id} but has no entry in that document.",
             filters_applied,
+            kind="not_found",
         )
 
     await _enrich([vuln])
@@ -298,9 +312,17 @@ async def _lookup_cve(cve: str) -> dict:
     }
 
 
-async def _lookup_kb(kb: str, include_chain: bool = False) -> dict:
+async def _lookup_kb(
+    kb: str,
+    include_chain: bool = False,
+    month: str | None = None,
+    limit: int = 10,
+    offset: int = 0,
+) -> dict:
     kb_number = kb.strip().upper().removeprefix("KB").strip()
     filters_applied = {"kb": f"KB{kb_number}"}
+    if month is not None:
+        filters_applied["month"] = month
     if include_chain:
         filters_applied["include_chain"] = True
     if not kb_number.isdigit():
@@ -309,20 +331,38 @@ async def _lookup_kb(kb: str, include_chain: bool = False) -> dict:
             filters_applied,
         )
 
+    month_id: str | None = None
+    if month is not None:
+        month_id = msrc_api.normalize_month_id(month)
+        if month_id is None:
+            return _invalid_month_error(month, filters_applied)
+
+    limit = max(0, min(limit, MAX_LIMIT))
+    offset = max(0, offset)
+
     try:
         entries = await msrc_api.fetch_update_index()
     except MsrcApiError as exc:
-        return _error(str(exc), filters_applied)
+        return _error(str(exc), filters_applied, kind="upstream")
 
-    for entry in entries[:KB_SCAN_MONTHS]:
+    if month_id is not None:
+        candidates = [e for e in entries if e["id"] == month_id]
+        if not candidates:
+            return _error(
+                f"No security update release found for {month_id}.",
+                filters_applied,
+                kind="not_found",
+            )
+    else:
+        candidates = entries[:KB_SCAN_MONTHS]
+
+    for entry in candidates:
         try:
             release = await msrc_api.fetch_month(entry["id"])
         except MsrcApiError:
             continue
         matched = [
-            v
-            for v in release.vulnerabilities
-            if any(k.kb == kb_number for k in v.kb_articles)
+            v for v in release.vulnerabilities if any(k.kb == kb_number for k in v.kb_articles)
         ]
         if matched:
             await _enrich(matched)
@@ -330,16 +370,18 @@ async def _lookup_kb(kb: str, include_chain: bool = False) -> dict:
             response = {
                 **_release_header(release),
                 "total_found": len(matched),
-                "vulnerabilities": [v.to_summary_dict() for v in matched],
+                "vulnerabilities": [v.to_summary_dict() for v in matched[offset : offset + limit]],
                 "filters_applied": filters_applied,
             }
             if include_chain:
                 response.update(await _walk_chain(kb_number, release, entries))
             return response
 
+    where = month_id if month_id else f"the last {KB_SCAN_MONTHS} monthly releases"
     return _error(
-        f"KB{kb_number} was not found in the last {KB_SCAN_MONTHS} monthly releases.",
+        f"KB{kb_number} was not found in {where}.",
         filters_applied,
+        kind="not_found",
     )
 
 
@@ -425,9 +467,7 @@ async def _walk_chain(kb_number: str, release: MonthlyRelease, entries: list[dic
             break
         current_kb = target
         current_release = predecessor_release
-        pos = next(
-            (i for i, e in enumerate(window) if e["id"] == predecessor_release.id), pos
-        )
+        pos = next((i for i, e in enumerate(window) if e["id"] == predecessor_release.id), pos)
     else:
         note = f"Stopped: chain depth cap ({CHAIN_MAX_DEPTH} hops) reached."
 
@@ -487,19 +527,32 @@ def _release_header(release: MonthlyRelease) -> dict:
 
 
 def _build_filters_summary(**filters) -> dict:
-    summary = {k: v for k, v in filters.items() if v not in (None, 0)}
+    # Keep False values (e.g. exploited=False is a real filter); drop only
+    # unset params, empty strings, and the default offset
+    summary = {
+        k: v
+        for k, v in filters.items()
+        if v is not None and v != "" and not (k == "offset" and v == 0)
+    }
     if not summary:
         summary["note"] = (
-            "No filters applied; returning the most urgent vulnerabilities "
-            "from the latest release"
+            "No filters applied; returning the most urgent vulnerabilities from the latest release"
         )
     return summary
 
 
-def _error(message: str, filters_applied: dict) -> dict:
+def _invalid_month_error(month: str, filters_applied: dict) -> dict:
+    return _error(
+        f"Invalid month: {month!r}. Use formats like '2026-Apr' or '2026-04'.",
+        filters_applied,
+    )
+
+
+def _error(message: str, filters_applied: dict, kind: str = "invalid_input") -> dict:
     return {
         "total_found": 0,
         "vulnerabilities": [],
         "filters_applied": filters_applied,
         "error": message,
+        "error_kind": kind,
     }

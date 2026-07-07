@@ -4,23 +4,47 @@ The MSRC Security Update Guide CVRF API is public and requires no authentication
 https://github.com/microsoft/MSRC-Microsoft-Security-Updates-API
 """
 
+import asyncio
 import time
+from datetime import datetime
 
 import httpx
 
+from .. import telemetry
 from ..models.vulnerability import MonthlyRelease, parse_cvrf, parse_release_date
+from . import http_client
 
 MSRC_API_BASE = "https://api.msrc.microsoft.com/cvrf/v3.0"
 
 # Monthly docs can receive revisions; refresh recent months hourly. Older
-# months change rarely and are cached for the process lifetime.
+# months change rarely and are cached until evicted.
 RECENT_MONTH_TTL_SECONDS = 3600
 INDEX_TTL_SECONDS = 3600
 RECENT_MONTHS_WITH_TTL = 2
 
+# The MSRC index spans 125+ months, each a multi-MB document that parses to
+# even more; unbounded caches would OOM a small container if someone iterates
+# months. Full parses (with descriptions/FAQs) are the big ones; slim parses
+# are kept longer because chain walking scans up to 24 months.
+MAX_FULL_MONTHS_CACHED = 6
+MAX_SLIM_MONTHS_CACHED = 40
+
+# Bound concurrent upstream fetch+parse work (each doc is multi-MB)
+FETCH_CONCURRENCY = 3
+
 _MONTH_ABBRS = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
 ]
 
 # Caches: month_id -> (fetched_at, MonthlyRelease); index -> (fetched_at, entries)
@@ -30,6 +54,11 @@ _month_cache: dict[str, tuple[float, MonthlyRelease]] = {}
 _slim_month_cache: dict[str, tuple[float, MonthlyRelease]] = {}
 _index_cache: list = []  # [fetched_at, entries] when populated
 
+# Single-flight: concurrent cold requests for the same month fetch it once
+_month_locks: dict[str, asyncio.Lock] = {}
+_fetch_semaphore: asyncio.Semaphore | None = None
+_semaphore_loop: asyncio.AbstractEventLoop | None = None
+
 
 class MsrcApiError(Exception):
     """Raised when the MSRC API returns an error or unexpected response."""
@@ -37,9 +66,23 @@ class MsrcApiError(Exception):
 
 def clear_cache() -> None:
     """Reset all caches (used by tests)."""
+    global _fetch_semaphore, _semaphore_loop
     _month_cache.clear()
     _slim_month_cache.clear()
     _index_cache.clear()
+    _month_locks.clear()
+    _fetch_semaphore = None
+    _semaphore_loop = None
+
+
+def _get_fetch_semaphore() -> asyncio.Semaphore:
+    """Lazily create the fetch semaphore on the running loop."""
+    global _fetch_semaphore, _semaphore_loop
+    loop = asyncio.get_running_loop()
+    if _fetch_semaphore is None or _semaphore_loop is not loop:
+        _fetch_semaphore = asyncio.Semaphore(FETCH_CONCURRENCY)
+        _semaphore_loop = loop
+    return _fetch_semaphore
 
 
 def normalize_month_id(month: str) -> str | None:
@@ -72,8 +115,8 @@ async def _get_json(url: str, timeout: float = 60.0) -> dict:
     """GET a URL and return parsed JSON, raising MsrcApiError on failure."""
     headers = {"Accept": "application/json"}
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, headers=headers, timeout=timeout)
+        client = http_client.get_client()
+        response = await client.get(url, headers=headers, timeout=timeout)
     except httpx.HTTPError as exc:
         raise MsrcApiError(f"MSRC API request failed: {exc}") from exc
 
@@ -114,7 +157,7 @@ async def fetch_update_index() -> list[dict]:
         )
 
     entries.sort(
-        key=lambda e: parse_release_date(e["initial_release_date"]) or 0,
+        key=lambda e: parse_release_date(e["initial_release_date"]) or datetime.min,
         reverse=True,
     )
 
@@ -130,13 +173,8 @@ async def get_latest_month_id() -> str:
     return entries[0]["id"]
 
 
-async def fetch_month(month_id: str, slim: bool = False) -> MonthlyRelease:
-    """Fetch and parse a monthly CVRF document, using the cache when possible.
-
-    slim=True skips descriptions/FAQs (for chain walking across many months).
-    A cached full parse can satisfy a slim request, but never the reverse.
-    """
-    now = time.monotonic()
+async def _cached_month(month_id: str, slim: bool, now: float) -> MonthlyRelease | None:
+    """Return a cached parse if present and fresh enough, else None."""
     caches = [_month_cache, _slim_month_cache] if slim else [_month_cache]
     for cache in caches:
         cached = cache.get(month_id)
@@ -144,11 +182,48 @@ async def fetch_month(month_id: str, slim: bool = False) -> MonthlyRelease:
             fetched_at, release = cached
             if not await _is_recent_month(month_id) or now - fetched_at < RECENT_MONTH_TTL_SECONDS:
                 return release
+    return None
 
-    doc = await _get_json(f"{MSRC_API_BASE}/cvrf/{month_id}", timeout=120.0)
-    release = parse_cvrf(doc, include_text=not slim)
-    (_slim_month_cache if slim else _month_cache)[month_id] = (now, release)
-    return release
+
+def _evict_oldest(cache: dict[str, tuple[float, MonthlyRelease]], max_entries: int) -> None:
+    while len(cache) > max_entries:
+        oldest = min(cache, key=lambda k: cache[k][0])
+        del cache[oldest]
+
+
+async def fetch_month(month_id: str, slim: bool = False) -> MonthlyRelease:
+    """Fetch and parse a monthly CVRF document, using the cache when possible.
+
+    slim=True skips descriptions/FAQs (for chain walking across many months).
+    A cached full parse can satisfy a slim request, but never the reverse.
+    """
+    cached = await _cached_month(month_id, slim, time.monotonic())
+    if cached is not None:
+        return cached
+
+    lock = _month_locks.setdefault(month_id, asyncio.Lock())
+    async with lock:
+        # Another task may have fetched while we waited on the lock
+        cached = await _cached_month(month_id, slim, time.monotonic())
+        if cached is not None:
+            return cached
+
+        start = time.perf_counter()
+        async with _get_fetch_semaphore():
+            doc = await _get_json(f"{MSRC_API_BASE}/cvrf/{month_id}", timeout=120.0)
+            release = parse_cvrf(doc, include_text=not slim)
+        telemetry.track_event(
+            "msrc_fetch",
+            {
+                "month": month_id,
+                "slim": slim,
+                "duration_ms": round((time.perf_counter() - start) * 1000, 1),
+            },
+        )
+        cache = _slim_month_cache if slim else _month_cache
+        cache[month_id] = (time.monotonic(), release)
+        _evict_oldest(cache, MAX_SLIM_MONTHS_CACHED if slim else MAX_FULL_MONTHS_CACHED)
+        return release
 
 
 async def _is_recent_month(month_id: str) -> bool:

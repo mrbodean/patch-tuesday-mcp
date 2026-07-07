@@ -39,7 +39,12 @@ def setup_telemetry() -> bool:
         )
         return False
 
-    configure_azure_monitor(connection_string=connection_string)
+    # logger_name scopes log export to this package's namespace so SDK and
+    # third-party log records are not ingested as telemetry
+    configure_azure_monitor(
+        connection_string=connection_string,
+        logger_name="patch_tuesday_mcp",
+    )
     # Ensure our event logger's records are exported
     _logger.setLevel(logging.INFO)
     _enabled = True
@@ -83,9 +88,11 @@ def track_request(ip: str, path: str = "/mcp") -> None:
     )
 
 
-def track_tool_call(tool: str, filters_applied: dict, total_found: int,
-                    duration_ms: float) -> None:
-    """Record a tool invocation: which filters were used, result size, latency.
+def track_tool_call(
+    tool: str, filters_applied: dict, total_found: int, duration_ms: float, error_kind: str = ""
+) -> None:
+    """Record a tool invocation: which filters were used, result size, latency,
+    and whether it failed (error_kind: invalid_input / not_found / upstream).
 
     Free-text query values are not recorded — only which parameter names were
     used, plus low-cardinality values (month, severity).
@@ -101,5 +108,6 @@ def track_tool_call(tool: str, filters_applied: dict, total_found: int,
             "severity": filters_applied.get("severity", ""),
             "total_found": total_found,
             "duration_ms": round(duration_ms, 1),
+            "error_kind": error_kind,
         },
     )

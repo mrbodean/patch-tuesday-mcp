@@ -8,7 +8,8 @@ from fastmcp import FastMCP
 # Suppress FastMCP's INFO logs to reduce console noise
 logging.getLogger("fastmcp").setLevel(logging.WARNING)
 
-from . import telemetry  # noqa: E402
+from . import __version__, telemetry  # noqa: E402
+from .middleware.body_limit import DEFAULT_MAX_BODY_BYTES, BodyLimitMiddleware  # noqa: E402
 from .middleware.rate_limit import RateLimitMiddleware  # noqa: E402
 from .tools.search import msrc_search  # noqa: E402
 
@@ -31,8 +32,25 @@ mcp = FastMCP(
     ),
 )
 
-# Register tools
-mcp.tool(msrc_search)
+# Register tools. Annotations let clients auto-approve: the tool only reads
+# public data from external APIs and is safe to retry.
+mcp.tool(
+    msrc_search,
+    title="Search Microsoft Security Updates",
+    annotations={
+        "readOnlyHint": True,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request):
+    """Liveness endpoint for container probes and uptime checks."""
+    from starlette.responses import JSONResponse
+
+    return JSONResponse({"status": "ok", "server": "patch-tuesday-mcp", "version": __version__})
 
 
 def main():
@@ -42,7 +60,10 @@ def main():
     Set MCP_TRANSPORT=http to run as an HTTP server for remote access.
 
     HTTP mode extras (never active for stdio):
+    - Stateless streamable HTTP (safe behind multi-replica ingress)
     - Per-IP rate limiting (RATE_LIMIT_RPM, default 60; 0 disables)
+    - Request body size cap (MCP_MAX_BODY_BYTES, default 256 KiB; 0 disables)
+    - Permissive CORS so browser-based MCP clients can connect
     - Optional Application Insights telemetry
       (APPLICATIONINSIGHTS_CONNECTION_STRING)
     """
@@ -50,18 +71,32 @@ def main():
 
     if transport == "http":
         import uvicorn
+        from starlette.middleware.cors import CORSMiddleware
 
         host = os.getenv("MCP_HOST", "0.0.0.0")
         port = int(os.getenv("MCP_PORT", "8000"))
         rpm = int(os.getenv("RATE_LIMIT_RPM", "60"))
+        max_body = int(os.getenv("MCP_MAX_BODY_BYTES", str(DEFAULT_MAX_BODY_BYTES)))
 
         telemetry_enabled = telemetry.setup_telemetry()
 
-        app = mcp.http_app()
+        # Stateless: every request is self-contained, so replicas behind
+        # ingress without session affinity can serve any request
+        app = mcp.http_app(stateless_http=True)
+        app = BodyLimitMiddleware(app, max_bytes=max_body)
         app = RateLimitMiddleware(
             app,
             requests_per_minute=rpm,
             on_request=telemetry.track_request if telemetry_enabled else None,
+        )
+        # CORS outermost so preflights and 429/413 responses carry CORS headers
+        app = CORSMiddleware(
+            app,
+            allow_origins=["*"],
+            allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+            allow_headers=["*"],
+            expose_headers=["Mcp-Session-Id"],
+            max_age=86400,
         )
 
         print(f"Starting Patch Tuesday MCP server on {host}:{port}")

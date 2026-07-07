@@ -89,9 +89,7 @@ def _set_enrichment(
             }
         if "cisa.gov" in url:
             return {
-                "vulnerabilities": [
-                    {"cveID": c, **fields} for c, fields in kev_entries.items()
-                ]
+                "vulnerabilities": [{"cveID": c, **fields} for c, fields in kev_entries.items()]
             }
         raise EnrichmentError(f"unexpected URL in test: {url}")
 
@@ -132,11 +130,13 @@ async def test_cve_not_found():
     result = await msrc_search(cve="CVE-1900-00000")
     assert result["total_found"] == 0
     assert "not found" in result["error"]
+    assert result["error_kind"] == "not_found"
 
 
 async def test_cve_invalid_format():
     result = await msrc_search(cve="not-a-cve")
     assert "Invalid CVE format" in result["error"]
+    assert result["error_kind"] == "invalid_input"
 
 
 async def test_kb_lookup():
@@ -152,6 +152,35 @@ async def test_kb_lookup():
 async def test_kb_invalid():
     result = await msrc_search(kb="notakb")
     assert "Invalid KB number" in result["error"]
+    assert result["error_kind"] == "invalid_input"
+
+
+async def test_kb_with_month():
+    detail = await msrc_search(cve="CVE-2026-41108")
+    kb = detail["vulnerabilities"][0]["kb_articles"][0]["kb"]
+
+    # Month containing the KB (accepts numeric form)
+    result = await msrc_search(kb=kb, month="2026-06")
+    assert result["month"] == "2026-Jun"
+    assert result["total_found"] >= 1
+    assert result["filters_applied"]["month"] == "2026-06"
+
+    # Month that exists in the index but does not contain the KB
+    result = await msrc_search(kb=kb, month="2026-May")
+    assert result["total_found"] == 0
+    assert "2026-May" in result["error"]
+    assert result["error_kind"] == "not_found"
+
+    # Invalid month is rejected up front
+    result = await msrc_search(kb=kb, month="junk")
+    assert "Invalid month" in result["error"]
+
+
+async def test_filters_applied_keeps_false_values():
+    result = await msrc_search(exploited=False)
+    assert result["filters_applied"]["exploited"] is False
+    assert "note" not in result["filters_applied"]
+    assert result["total_found"] == 5, "all but the one exploited CVE"
 
 
 async def test_severity_filter():
@@ -517,3 +546,26 @@ async def test_include_chain_without_kb_is_ignored():
     assert "error" not in result
     assert "supersedence_chain" not in result
     assert "chain_complete" not in result
+
+
+async def test_kb_lookup_respects_limit_and_offset(monkeypatch):
+    _patch_chain_months(
+        monkeypatch,
+        {
+            "2026-Jun": _synthetic_month(
+                "2026-Jun", "", [("5300003", None), ("5300003", None), ("5300003", None)]
+            ),
+        },
+    )
+
+    page1 = await msrc_search(kb="5300003", limit=2)
+    assert page1["total_found"] == 3
+    assert len(page1["vulnerabilities"]) == 2
+
+    page2 = await msrc_search(kb="5300003", limit=2, offset=2)
+    assert page2["total_found"] == 3
+    assert len(page2["vulnerabilities"]) == 1
+
+    cves1 = {v["cve"] for v in page1["vulnerabilities"]}
+    cves2 = {v["cve"] for v in page2["vulnerabilities"]}
+    assert cves1.isdisjoint(cves2)

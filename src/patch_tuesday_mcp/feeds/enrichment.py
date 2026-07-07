@@ -15,6 +15,8 @@ import time
 
 import httpx
 
+from . import http_client
+
 EPSS_API_URL = "https://api.first.org/data/v1/epss"
 KEV_CATALOG_URL = (
     "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
@@ -46,8 +48,8 @@ async def _get_json(url: str, timeout: float = 30.0) -> dict:
     """GET a URL and return parsed JSON, raising EnrichmentError on failure."""
     headers = {"Accept": "application/json"}
     try:
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            response = await client.get(url, headers=headers, timeout=timeout)
+        client = http_client.get_client()
+        response = await client.get(url, headers=headers, timeout=timeout)
     except httpx.HTTPError as exc:
         raise EnrichmentError(f"Enrichment request failed: {exc}") from exc
 

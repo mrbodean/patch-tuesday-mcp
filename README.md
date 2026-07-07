@@ -253,7 +253,12 @@ HTTP-mode environment variables:
 | `MCP_TRANSPORT` | `stdio` | Set to `http` for remote serving |
 | `MCP_HOST` / `MCP_PORT` | `0.0.0.0` / `8000` | Bind address |
 | `RATE_LIMIT_RPM` | `60` | Per-IP requests/minute (`0` disables) |
+| `MCP_MAX_BODY_BYTES` | `262144` | Max request body size, returns 413 above it (`0` disables) |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | unset | Opt-in usage telemetry (requires `pip install patch-tuesday-mcp[telemetry]`) |
+
+HTTP mode also serves `GET /health` (liveness endpoint, exempt from rate
+limiting) and runs stateless, so it can scale to multiple replicas behind a
+load balancer without session affinity.
 
 See [docs/deploy-azure.md](docs/deploy-azure.md) for a full Azure Container Apps deployment guide.
 

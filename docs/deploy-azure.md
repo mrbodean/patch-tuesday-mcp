@@ -8,19 +8,19 @@ Application Insights usage telemetry.
 always-on replica (after ACA's monthly free grants). Telemetry is free at this
 scale (first 5 GB/month of App Insights ingestion included).
 
-## 1. Build and push the image (ghcr.io — free for public images)
+## 1. Build and push the image (Docker Hub — free for public images)
 
-Using GitHub Container Registry avoids paying ~$5/month for Azure Container
-Registry Basic.
+Using a free public registry avoids paying ~$5/month for Azure Container
+Registry Basic. The live deployment uses Docker Hub:
 
 ```bash
-docker build -t ghcr.io/jonnybottles/patch-tuesday-mcp:latest .
-echo $GITHUB_TOKEN | docker login ghcr.io -u jonnybottles --password-stdin
-docker push ghcr.io/jonnybottles/patch-tuesday-mcp:latest
+docker build -t docker.io/xxbutler21xx/patch-tuesday-mcp:latest .
+docker login docker.io -u xxbutler21xx
+docker push docker.io/xxbutler21xx/patch-tuesday-mcp:latest
 ```
 
-Make the package public in GitHub → Packages → patch-tuesday-mcp → Settings,
-so ACA can pull it without credentials.
+Make sure the repository is public on Docker Hub so ACA can pull it without
+credentials. (GitHub Container Registry `ghcr.io` works the same way.)
 
 ## 2. Create the Container Apps environment
 
@@ -58,7 +58,7 @@ az containerapp create \
   --name patch-tuesday-mcp \
   --resource-group patch-tuesday-rg \
   --environment patch-tuesday-env \
-  --image ghcr.io/jonnybottles/patch-tuesday-mcp:latest \
+  --image docker.io/xxbutler21xx/patch-tuesday-mcp:latest \
   --target-port 8000 \
   --ingress external \
   --cpu 0.25 --memory 0.5Gi \
@@ -99,21 +99,39 @@ claude mcp add --transport http patch-tuesday https://<app-fqdn>/mcp
 | Layer | Protection |
 |-------|-----------|
 | `--max-replicas 2` | Hard cost ceiling — a flood of requests cannot scale your bill |
-| `RATE_LIMIT_RPM=60` | Per-client-IP token bucket, returns 429 with Retry-After |
-| In-process caching | Even hammered, the server hits the MSRC API at most ~hourly per month document |
+| `RATE_LIMIT_RPM=60` | Per-client-IP token bucket, returns 429 with Retry-After. The client IP comes from the rightmost `X-Forwarded-For` entry (the one ACA ingress appends), so it cannot be spoofed |
+| `MCP_MAX_BODY_BYTES` | Request bodies over 256 KB are rejected with 413 |
+| Bounded caches | Month-document caches are size-capped (6 full / 40 slim parses), so iterating historical months cannot exhaust the 0.5 GiB container |
+| In-process caching | Even hammered, the server hits the MSRC API at most ~hourly per month document, single-flighted across concurrent requests |
 | Read-only public data | Nothing sensitive to leak; worst case is compute cost, which is capped |
+
+HTTP mode is stateless, so both replicas can serve any request without
+session affinity. `GET /health` is exempt from rate limiting and suitable
+for ACA HTTP probes or external uptime checks.
 
 ## 6. Budget alert (recommended)
 
-Get emailed if monthly spend exceeds $15:
+Get emailed as monthly spend approaches $30. `az consumption budget create`
+cannot attach email notifications, so use the ARM API via `az rest` (this is
+how the live budget is configured — email at 80% and 100% of $30):
 
 ```bash
-az consumption budget create \
-  --budget-name patch-tuesday-budget \
-  --amount 15 \
-  --time-grain Monthly \
-  --resource-group patch-tuesday-rg \
-  --category Cost
+az rest --method PUT \
+  --url "https://management.azure.com/subscriptions/<sub-id>/resourceGroups/patch-tuesday-rg/providers/Microsoft.Consumption/budgets/patch-tuesday-budget?api-version=2023-05-01" \
+  --body '{
+    "properties": {
+      "category": "Cost",
+      "amount": 30,
+      "timeGrain": "Monthly",
+      "timePeriod": {"startDate": "2026-07-01T00:00:00Z", "endDate": "2028-07-01T00:00:00Z"},
+      "notifications": {
+        "actual80": {"enabled": true, "operator": "GreaterThan", "threshold": 80,
+                      "thresholdType": "Actual", "contactEmails": ["you@example.com"]},
+        "actual100": {"enabled": true, "operator": "GreaterThan", "threshold": 100,
+                       "thresholdType": "Actual", "contactEmails": ["you@example.com"]}
+      }
+    }
+  }'
 ```
 
 (Or set it up in Portal → Cost Management → Budgets, which also supports
@@ -159,14 +177,45 @@ traces
 | summarize p50 = percentile(ms, 50), p95 = percentile(ms, 95) by bin(timestamp, 1d)
 ```
 
+Error rate by kind (invalid_input / not_found / upstream — a spike in
+`upstream` means the MSRC API is having a bad day):
+
+```kusto
+traces
+| where customDimensions.event_name == "tool_call"
+| extend kind = tostring(customDimensions.custom_error_kind)
+| summarize calls = count() by kind, bin(timestamp, 1d)
+| order by timestamp desc
+```
+
+Upstream MSRC fetch latency and cache effectiveness (`msrc_fetch` events are
+emitted only on cache misses, so misses/tool-calls approximates the miss
+rate):
+
+```kusto
+traces
+| where customDimensions.event_name == "msrc_fetch"
+| extend ms = todouble(customDimensions.custom_duration_ms)
+| summarize fetches = count(), p95_ms = percentile(ms, 95) by bin(timestamp, 1d)
+```
+
+**Ingestion cost:** the first 5 GB/month are free, which is plenty at this
+scale. If usage grows, `configure_azure_monitor` supports `sampling_ratio`
+(and recent versions default to rate-limited trace sampling); log-based
+events like `tool_call` can be trimmed by raising the exported log level.
+
 ## 8. Updating the deployment
 
 ```bash
-docker build -t ghcr.io/jonnybottles/patch-tuesday-mcp:latest .
-docker push ghcr.io/jonnybottles/patch-tuesday-mcp:latest
+docker build -t docker.io/xxbutler21xx/patch-tuesday-mcp:latest .
+docker push docker.io/xxbutler21xx/patch-tuesday-mcp:latest
 
 az containerapp update \
   --name patch-tuesday-mcp \
   --resource-group patch-tuesday-rg \
-  --image ghcr.io/jonnybottles/patch-tuesday-mcp:latest
+  --image docker.io/xxbutler21xx/patch-tuesday-mcp:latest
 ```
+
+Tip: push a version tag (e.g. `:0.3.0`) alongside `:latest` and deploy the
+tag — `az containerapp update` with an unchanged image reference will not
+roll a new revision.

@@ -1,5 +1,6 @@
 """Tests for the MSRC API client (mocked HTTP)."""
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -132,3 +133,72 @@ async def test_slim_fetch_skips_text_and_caches_separately(mock_api):
     assert again is full
     doc_calls = [c for c in mock_api if c.endswith("/cvrf/2026-Jun")]
     assert len(doc_calls) == 2, "slim request after full parse hits the full cache"
+
+
+async def test_index_sort_handles_missing_dates(monkeypatch):
+    """An index entry without a release date must not break sorting."""
+    index = {
+        "value": [
+            {
+                "ID": "0000-Bad",
+                "DocumentTitle": "Broken Security Updates",
+                "InitialReleaseDate": None,
+                "CurrentReleaseDate": None,
+            },
+            {
+                "ID": "2026-Jun",
+                "DocumentTitle": "June 2026 Security Updates",
+                "InitialReleaseDate": "2026-06-09T07:00:00Z",
+                "CurrentReleaseDate": "2026-07-07T07:00:00Z",
+            },
+        ]
+    }
+
+    async def fake_get_json(url, timeout=60.0):
+        return index
+
+    monkeypatch.setattr(msrc_api, "_get_json", fake_get_json)
+    entries = await fetch_update_index()
+    assert [e["id"] for e in entries] == ["2026-Jun", "0000-Bad"]
+
+
+async def test_full_month_cache_is_bounded(monkeypatch):
+    monkeypatch.setattr(msrc_api, "MAX_FULL_MONTHS_CACHED", 2)
+
+    with open(FIXTURE, encoding="utf-8") as f:
+        cvrf_doc = json.load(f)
+
+    async def fake_get_json(url, timeout=60.0):
+        if url.endswith("/updates"):
+            return {"value": []}
+        return cvrf_doc
+
+    monkeypatch.setattr(msrc_api, "_get_json", fake_get_json)
+    for month_id in ["2026-Jan", "2026-Feb", "2026-Mar"]:
+        await fetch_month(month_id)
+
+    assert set(msrc_api._month_cache) == {"2026-Feb", "2026-Mar"}, (
+        "oldest entry is evicted once the cap is reached"
+    )
+
+
+async def test_concurrent_fetch_month_is_single_flight(monkeypatch):
+    """Concurrent cold requests for the same month fetch the document once."""
+    calls = []
+
+    with open(FIXTURE, encoding="utf-8") as f:
+        cvrf_doc = json.load(f)
+
+    async def fake_get_json(url, timeout=60.0):
+        calls.append(url)
+        if url.endswith("/updates"):
+            return {"value": []}
+        await asyncio.sleep(0.01)  # let the other tasks pile up on the lock
+        return cvrf_doc
+
+    monkeypatch.setattr(msrc_api, "_get_json", fake_get_json)
+    releases = await asyncio.gather(*(fetch_month("2026-Jun") for _ in range(5)))
+
+    doc_calls = [c for c in calls if c.endswith("/cvrf/2026-Jun")]
+    assert len(doc_calls) == 1
+    assert all(r is releases[0] for r in releases)
