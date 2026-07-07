@@ -21,9 +21,13 @@ mcp = FastMCP(
         "retrieve vulnerabilities and their fixes. Look up a specific CVE with "
         "cve='CVE-...' (full detail, works across all months), find what a KB "
         "fixes with kb='5094123', or filter the latest month by product, "
-        "severity, exploited=True, or min_cvss. Set include_stats=True with "
-        "limit=0 for a month overview (counts by severity, impact, product "
-        "family, exploited)."
+        "severity, exploited=True, or min_cvss. Results are enriched with "
+        "EPSS exploitation probabilities and CISA KEV catalog status: filter "
+        "with kev=True (confirmed exploited, federal due dates) or "
+        "min_epss=0.5 (EPSS >= 50%). Add include_chain=True to a kb= lookup "
+        "to walk Microsoft-stated supersedence links (which KBs it replaces). "
+        "Set include_stats=True with limit=0 for a month overview (counts by "
+        "severity, impact, product family, exploited, KEV)."
     ),
 )
 

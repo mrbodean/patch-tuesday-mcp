@@ -114,3 +114,21 @@ async def test_fetch_month_parses_and_caches(mock_api):
 async def test_find_month_for_cve(mock_api):
     assert await find_month_for_cve("CVE-2026-41108") == "2026-Jun"
     assert await find_month_for_cve("CVE-1900-00000") is None
+
+
+async def test_slim_fetch_skips_text_and_caches_separately(mock_api):
+    slim = await fetch_month("2026-Jun", slim=True)
+    assert all(v.description == "" for v in slim.vulnerabilities)
+    assert all(v.faqs == [] for v in slim.vulnerabilities)
+
+    # A slim entry must NOT satisfy a full request
+    full = await fetch_month("2026-Jun")
+    assert any(v.description for v in full.vulnerabilities)
+    doc_calls = [c for c in mock_api if c.endswith("/cvrf/2026-Jun")]
+    assert len(doc_calls) == 2, "full fetch after slim requires a re-fetch"
+
+    # ...but a full entry satisfies later slim requests
+    again = await fetch_month("2026-Jun", slim=True)
+    assert again is full
+    doc_calls = [c for c in mock_api if c.endswith("/cvrf/2026-Jun")]
+    assert len(doc_calls) == 2, "slim request after full parse hits the full cache"

@@ -25,6 +25,9 @@ _MONTH_ABBRS = [
 
 # Caches: month_id -> (fetched_at, MonthlyRelease); index -> (fetched_at, entries)
 _month_cache: dict[str, tuple[float, MonthlyRelease]] = {}
+# Slim parses (no descriptions/FAQs) kept separately so chain walking across
+# many months stays within the container memory budget
+_slim_month_cache: dict[str, tuple[float, MonthlyRelease]] = {}
 _index_cache: list = []  # [fetched_at, entries] when populated
 
 
@@ -35,6 +38,7 @@ class MsrcApiError(Exception):
 def clear_cache() -> None:
     """Reset all caches (used by tests)."""
     _month_cache.clear()
+    _slim_month_cache.clear()
     _index_cache.clear()
 
 
@@ -126,18 +130,24 @@ async def get_latest_month_id() -> str:
     return entries[0]["id"]
 
 
-async def fetch_month(month_id: str) -> MonthlyRelease:
-    """Fetch and parse a monthly CVRF document, using the cache when possible."""
+async def fetch_month(month_id: str, slim: bool = False) -> MonthlyRelease:
+    """Fetch and parse a monthly CVRF document, using the cache when possible.
+
+    slim=True skips descriptions/FAQs (for chain walking across many months).
+    A cached full parse can satisfy a slim request, but never the reverse.
+    """
     now = time.monotonic()
-    cached = _month_cache.get(month_id)
-    if cached:
-        fetched_at, release = cached
-        if not await _is_recent_month(month_id) or now - fetched_at < RECENT_MONTH_TTL_SECONDS:
-            return release
+    caches = [_month_cache, _slim_month_cache] if slim else [_month_cache]
+    for cache in caches:
+        cached = cache.get(month_id)
+        if cached:
+            fetched_at, release = cached
+            if not await _is_recent_month(month_id) or now - fetched_at < RECENT_MONTH_TTL_SECONDS:
+                return release
 
     doc = await _get_json(f"{MSRC_API_BASE}/cvrf/{month_id}", timeout=120.0)
-    release = parse_cvrf(doc)
-    _month_cache[month_id] = (now, release)
+    release = parse_cvrf(doc, include_text=not slim)
+    (_slim_month_cache if slim else _month_cache)[month_id] = (now, release)
     return release
 
 

@@ -5,8 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from patch_tuesday_mcp.feeds import msrc_api
+from patch_tuesday_mcp.feeds import enrichment, msrc_api
+from patch_tuesday_mcp.feeds.enrichment import EnrichmentError
 from patch_tuesday_mcp.feeds.msrc_api import MsrcApiError, clear_cache
+from patch_tuesday_mcp.tools import search as search_module
 from patch_tuesday_mcp.tools.search import msrc_search
 
 FIXTURE = Path(__file__).parent / "fixtures" / "cvrf_sample.json"
@@ -32,6 +34,7 @@ INDEX_RESPONSE = {
 @pytest.fixture(autouse=True)
 def mock_api(monkeypatch):
     clear_cache()
+    enrichment.clear_cache()
 
     with open(FIXTURE, encoding="utf-8") as f:
         cvrf_doc = json.load(f)
@@ -49,9 +52,58 @@ def mock_api(monkeypatch):
             raise MsrcApiError("not found")
         raise MsrcApiError(f"unexpected URL in test: {url}")
 
+    async def fake_enrichment_get_json(url, timeout=30.0):
+        # Default: nothing on KEV, nothing known to EPSS
+        if "api.first.org" in url:
+            return {"status": "OK", "data": []}
+        if "cisa.gov" in url:
+            return {"vulnerabilities": []}
+        raise EnrichmentError(f"unexpected URL in test: {url}")
+
     monkeypatch.setattr(msrc_api, "_get_json", fake_get_json)
+    monkeypatch.setattr(enrichment, "_get_json", fake_enrichment_get_json)
     yield
     clear_cache()
+    enrichment.clear_cache()
+
+
+def _set_enrichment(
+    monkeypatch,
+    kev: dict[str, dict] | None = None,
+    epss: dict[str, tuple[str, str]] | None = None,
+) -> None:
+    """Re-patch enrichment with canned KEV entries and EPSS (score, percentile) strings."""
+    kev_entries = kev or {}
+    epss_scores = epss or {}
+
+    async def fake_enrichment_get_json(url, timeout=30.0):
+        if "api.first.org" in url:
+            cves = url.split("cve=")[1].split(",")
+            return {
+                "status": "OK",
+                "data": [
+                    {"cve": c, "epss": epss_scores[c][0], "percentile": epss_scores[c][1]}
+                    for c in cves
+                    if c in epss_scores
+                ],
+            }
+        if "cisa.gov" in url:
+            return {
+                "vulnerabilities": [
+                    {"cveID": c, **fields} for c, fields in kev_entries.items()
+                ]
+            }
+        raise EnrichmentError(f"unexpected URL in test: {url}")
+
+    monkeypatch.setattr(enrichment, "_get_json", fake_enrichment_get_json)
+    enrichment.clear_cache()
+
+
+KEV_FIELDS = {
+    "dateAdded": "2026-06-15",
+    "dueDate": "2026-07-06",
+    "knownRansomwareCampaignUse": "Known",
+}
 
 
 async def test_no_filters_returns_latest_month_most_urgent_first():
@@ -182,3 +234,286 @@ async def test_pagination():
     cves1 = {v["cve"] for v in page1["vulnerabilities"]}
     cves2 = {v["cve"] for v in page2["vulnerabilities"]}
     assert cves1.isdisjoint(cves2)
+
+
+# --- EPSS / KEV enrichment ---
+
+
+async def test_kev_filter(monkeypatch):
+    _set_enrichment(
+        monkeypatch,
+        kev={"CVE-2026-99999": KEV_FIELDS, "CVE-2026-45472": KEV_FIELDS},
+    )
+
+    on_kev = await msrc_search(kev=True)
+    assert {v["cve"] for v in on_kev["vulnerabilities"]} == {
+        "CVE-2026-99999",
+        "CVE-2026-45472",
+    }
+    assert all(v["kev"] is True for v in on_kev["vulnerabilities"])
+    assert on_kev["filters_applied"]["kev"] is True
+
+    off_kev = await msrc_search(kev=False)
+    assert off_kev["total_found"] == 4
+    assert all("kev" not in v for v in off_kev["vulnerabilities"])
+
+
+async def test_min_epss_filter(monkeypatch):
+    _set_enrichment(
+        monkeypatch,
+        epss={
+            "CVE-2026-41108": ("0.900000000", "0.995000000"),
+            "CVE-2026-45472": ("0.300000000", "0.800000000"),
+        },
+    )
+
+    result = await msrc_search(min_epss=0.5)
+    assert [v["cve"] for v in result["vulnerabilities"]] == ["CVE-2026-41108"]
+    assert result["vulnerabilities"][0]["epss_score"] == 0.9
+    assert result["filters_applied"]["min_epss"] == 0.5
+
+
+async def test_sort_kev_exploited_tier_then_epss(monkeypatch):
+    # Tier 1: exploited CVE-2026-99999 (EPSS .9) and KEV-listed CVE-2026-46245
+    # (Moderate, EPSS .05). Tier 2 sorts by EPSS before severity/CVSS.
+    _set_enrichment(
+        monkeypatch,
+        kev={"CVE-2026-46245": KEV_FIELDS},
+        epss={
+            "CVE-2026-99999": ("0.9", "0.99"),
+            "CVE-2026-46245": ("0.05", "0.3"),
+            "CVE-2026-50656": ("0.7", "0.97"),
+            "CVE-2026-47644": ("0.02", "0.2"),
+        },
+    )
+
+    result = await msrc_search()
+    assert [v["cve"] for v in result["vulnerabilities"]] == [
+        "CVE-2026-99999",  # tier 1, EPSS 0.9
+        "CVE-2026-46245",  # tier 1 via KEV despite Moderate severity
+        "CVE-2026-50656",  # tier 2, EPSS 0.7
+        "CVE-2026-47644",  # tier 2, EPSS 0.02 beats unscored Criticals
+        "CVE-2026-45472",  # tier 2, no EPSS, Critical
+        "CVE-2026-41108",  # tier 2, no EPSS, Important
+    ]
+
+
+async def test_summary_and_detail_enrichment_fields(monkeypatch):
+    _set_enrichment(
+        monkeypatch,
+        kev={"CVE-2026-41108": KEV_FIELDS},
+        epss={"CVE-2026-41108": ("0.923110000", "0.999130000")},
+    )
+
+    summary = (await msrc_search(query="CVE-2026-41108"))["vulnerabilities"][0]
+    assert summary["epss_score"] == 0.92311
+    assert summary["kev"] is True, "summary carries only a presence flag"
+
+    detail = (await msrc_search(cve="CVE-2026-41108"))["vulnerabilities"][0]
+    assert detail["epss_score"] == 0.92311
+    assert detail["epss_percentile"] == 0.99913
+    assert detail["kev"] == {
+        "date_added": "2026-06-15",
+        "due_date": "2026-07-06",
+        "ransomware_use": "Known",
+    }
+
+
+async def test_enrichment_degradation(monkeypatch):
+    """Both enrichment sources failing must not break or taint MSRC results."""
+
+    async def failing_get_json(url, timeout=30.0):
+        raise EnrichmentError("boom")
+
+    monkeypatch.setattr(enrichment, "_get_json", failing_get_json)
+    enrichment.clear_cache()
+
+    result = await msrc_search()
+    assert "error" not in result
+    assert result["total_found"] == 6
+    for v in result["vulnerabilities"]:
+        assert "epss_score" not in v
+        assert "kev" not in v
+
+    detail = await msrc_search(cve="CVE-2026-41108")
+    assert "error" not in detail
+    assert "epss_score" not in detail["vulnerabilities"][0]
+
+
+async def test_stats_include_kev_count(monkeypatch):
+    _set_enrichment(
+        monkeypatch,
+        kev={"CVE-2026-99999": KEV_FIELDS, "CVE-2026-45472": KEV_FIELDS},
+    )
+
+    result = await msrc_search(include_stats=True, limit=0)
+    assert result["stats"]["kev"] == 2
+    assert result["stats"]["exploited"] == 1
+
+
+# --- Supersedence chain walking ---
+
+
+def _synthetic_month(month_id: str, date: str, kbs: list[tuple[str, str | None]]) -> dict:
+    """Build a minimal CVRF doc; one synthetic vuln per (kb, supercedence) pair."""
+    return {
+        "DocumentTracking": {
+            "Identification": {"ID": {"Value": month_id}},
+            "InitialReleaseDate": date,
+            "CurrentReleaseDate": date,
+        },
+        "DocumentTitle": {"Value": f"{month_id} Security Updates"},
+        "ProductTree": {"FullProductName": [], "Branch": []},
+        "Vulnerability": [
+            {
+                "CVE": f"CVE-2026-{80000 + i}",
+                "Title": {"Value": f"Synthetic vulnerability {i}"},
+                "Notes": [
+                    {"Type": 2, "Value": "<p>Synthetic description</p>"},
+                    {"Type": 4, "Value": "Synthetic FAQ"},
+                ],
+                "Threats": [{"Type": 3, "Description": {"Value": "Important"}}],
+                "Remediations": [
+                    {
+                        "Type": 2,
+                        "Description": {"Value": kb},
+                        "Supercedence": supercedence,
+                        "SubType": "Security Update",
+                    }
+                ],
+            }
+            for i, (kb, supercedence) in enumerate(kbs)
+        ],
+    }
+
+
+def _patch_chain_months(monkeypatch, docs: dict[str, dict]) -> None:
+    """Point the MSRC mock at synthetic monthly docs (newest month first)."""
+    dates = {}
+    for i, month_id in enumerate(docs):
+        dates[month_id] = f"2026-{12 - i:02d}-09T07:00:00Z"
+
+    index = {
+        "value": [
+            {
+                "ID": month_id,
+                "DocumentTitle": f"{month_id} Security Updates",
+                "InitialReleaseDate": dates[month_id],
+                "CurrentReleaseDate": dates[month_id],
+            }
+            for month_id in docs
+        ]
+    }
+
+    async def fake_get_json(url, timeout=60.0):
+        if url.endswith("/updates"):
+            return index
+        for month_id, doc in docs.items():
+            if url.endswith(f"/cvrf/{month_id}"):
+                return doc
+        raise MsrcApiError("not found")
+
+    monkeypatch.setattr(msrc_api, "_get_json", fake_get_json)
+    clear_cache()
+
+
+async def test_chain_happy_path(monkeypatch):
+    _patch_chain_months(
+        monkeypatch,
+        {
+            "2026-Jun": _synthetic_month("2026-Jun", "", [("5300003", "5300002")]),
+            "2026-May": _synthetic_month("2026-May", "", [("5300002", "KB5300001")]),
+            "2026-Apr": _synthetic_month("2026-Apr", "", [("5300001", None)]),
+        },
+    )
+
+    result = await msrc_search(kb="5300003", include_chain=True)
+    assert "error" not in result
+    assert result["chain_complete"] is True
+    assert "chain_note" not in result
+    assert result["supersedence_chain"] == [
+        {"kb": "5300003", "month": "2026-Jun", "supersedes": "5300002", "source": "microsoft"},
+        {"kb": "5300002", "month": "2026-May", "supersedes": "5300001", "source": "microsoft"},
+        {"kb": "5300001", "month": "2026-Apr", "source": "microsoft"},
+    ]
+    # Memory guard: only the queried KB's month is parsed full, the rest slim
+    assert "2026-Jun" in msrc_api._month_cache
+    assert set(msrc_api._slim_month_cache) == {"2026-May", "2026-Apr"}
+
+
+async def test_chain_depth_cap(monkeypatch):
+    _patch_chain_months(
+        monkeypatch,
+        {
+            "2026-Jun": _synthetic_month("2026-Jun", "", [("5300003", "5300002")]),
+            "2026-May": _synthetic_month("2026-May", "", [("5300002", "5300001")]),
+            "2026-Apr": _synthetic_month("2026-Apr", "", [("5300001", None)]),
+        },
+    )
+    monkeypatch.setattr(search_module, "CHAIN_MAX_DEPTH", 2)
+
+    result = await msrc_search(kb="5300003", include_chain=True)
+    assert result["chain_complete"] is False
+    assert "depth cap" in result["chain_note"]
+    assert len(result["supersedence_chain"]) == 2
+
+
+async def test_chain_cycle_guard(monkeypatch):
+    _patch_chain_months(
+        monkeypatch,
+        {
+            "2026-Jun": _synthetic_month("2026-Jun", "", [("5300003", "5300002")]),
+            "2026-May": _synthetic_month("2026-May", "", [("5300002", "5300003")]),
+        },
+    )
+
+    result = await msrc_search(kb="5300003", include_chain=True)
+    assert result["chain_complete"] is False
+    assert "cycle" in result["chain_note"]
+    assert [hop["kb"] for hop in result["supersedence_chain"]] == ["5300003", "5300002"]
+
+
+async def test_chain_predecessor_not_found(monkeypatch):
+    _patch_chain_months(
+        monkeypatch,
+        {
+            "2026-Jun": _synthetic_month("2026-Jun", "", [("5300003", "5300002")]),
+            "2026-May": _synthetic_month("2026-May", "", [("5309999", None)]),
+        },
+    )
+
+    result = await msrc_search(kb="5300003", include_chain=True)
+    assert "error" not in result
+    assert result["chain_complete"] is False
+    assert "not found" in result["chain_note"]
+    assert result["supersedence_chain"] == [
+        {"kb": "5300003", "month": "2026-Jun", "supersedes": "5300002", "source": "microsoft"},
+    ]
+
+
+async def test_chain_multiple_predecessors(monkeypatch):
+    _patch_chain_months(
+        monkeypatch,
+        {
+            "2026-Jun": _synthetic_month(
+                "2026-Jun",
+                "",
+                # Same KB with different stated predecessors across product groups
+                [("5300003", "5300002"), ("5300003", "5300002"), ("5300003", "5300009")],
+            ),
+            "2026-May": _synthetic_month("2026-May", "", [("5300002", None)]),
+        },
+    )
+
+    result = await msrc_search(kb="5300003", include_chain=True)
+    assert result["chain_complete"] is True
+    first_hop = result["supersedence_chain"][0]
+    assert first_hop["supersedes"] == "5300002", "most frequent predecessor is followed"
+    assert first_hop["other_predecessors"] == ["5300009"]
+
+
+async def test_include_chain_without_kb_is_ignored():
+    result = await msrc_search(include_chain=True)
+    assert "error" not in result
+    assert "supersedence_chain" not in result
+    assert "chain_complete" not in result

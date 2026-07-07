@@ -7,6 +7,7 @@ import pytest
 
 from patch_tuesday_mcp.models.vulnerability import (
     MonthlyRelease,
+    Vulnerability,
     parse_cvrf,
     parse_exploit_status,
     sort_vulnerabilities,
@@ -99,6 +100,75 @@ def test_sort_exploited_first(release):
     severity_ranks = ["Critical", "Important", "Moderate", "Low"]
     ranks = [severity_ranks.index(v.severity) for v in non_exploited]
     assert ranks == sorted(ranks)
+
+
+KEV_ENTRY = {
+    "date_added": "2026-06-15",
+    "due_date": "2026-07-06",
+    "ransomware_use": "Known",
+}
+
+
+def test_enrichment_fields_in_summary_and_detail():
+    vuln = Vulnerability(
+        cve="CVE-2026-99999", epss_score=0.92311, epss_percentile=0.99913, kev=KEV_ENTRY
+    )
+    summary = vuln.to_summary_dict()
+    assert summary["epss_score"] == 0.92311
+    assert summary["kev"] is True, "summary carries a compact presence flag"
+    assert "epss_percentile" not in summary
+
+    detail = vuln.to_detail_dict()
+    assert detail["epss_score"] == 0.92311
+    assert detail["epss_percentile"] == 0.99913
+    assert detail["kev"] == KEV_ENTRY
+
+
+def test_enrichment_fields_absent_when_unset():
+    vuln = Vulnerability(cve="CVE-2026-41108")
+    assert "epss_score" not in vuln.to_summary_dict()
+    assert "kev" not in vuln.to_summary_dict()
+    assert "epss_percentile" not in vuln.to_detail_dict()
+    assert "kev" not in vuln.to_detail_dict()
+
+
+def test_stats_kev_count():
+    release = MonthlyRelease(
+        id="2026-Jun",
+        vulnerabilities=[
+            Vulnerability(cve="CVE-2026-1", kev=KEV_ENTRY),
+            Vulnerability(cve="CVE-2026-2", kev=KEV_ENTRY, exploited=True),
+            Vulnerability(cve="CVE-2026-3"),
+        ],
+    )
+    stats = release.stats()
+    assert stats["kev"] == 2
+    assert stats["exploited"] == 1
+
+
+def test_sort_kev_and_epss_tiers():
+    kev_low_sev = Vulnerability(cve="CVE-2026-1", severity="Low", kev=KEV_ENTRY, epss_score=0.1)
+    exploited = Vulnerability(cve="CVE-2026-2", severity="Low", exploited=True, epss_score=0.8)
+    high_epss = Vulnerability(cve="CVE-2026-3", severity="Low", epss_score=0.9)
+    critical_no_epss = Vulnerability(cve="CVE-2026-4", severity="Critical", max_cvss=9.8)
+
+    ordered = sort_vulnerabilities([critical_no_epss, high_epss, kev_low_sev, exploited])
+    assert [v.cve for v in ordered] == [
+        "CVE-2026-2",  # KEV/exploited tier, EPSS 0.8
+        "CVE-2026-1",  # KEV/exploited tier, EPSS 0.1
+        "CVE-2026-3",  # second tier: EPSS outranks severity
+        "CVE-2026-4",  # second tier: no EPSS, despite Critical/9.8
+    ]
+
+
+def test_slim_parse_skips_text(cvrf_doc):
+    release = parse_cvrf(cvrf_doc, include_text=False)
+    assert all(v.description == "" for v in release.vulnerabilities)
+    assert all(v.faqs == [] for v in release.vulnerabilities)
+    # Everything else is still parsed
+    vuln = next(v for v in release.vulnerabilities if v.cve == "CVE-2026-41108")
+    assert vuln.severity == "Important"
+    assert vuln.kb_articles
 
 
 def test_parse_exploit_status():

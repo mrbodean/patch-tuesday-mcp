@@ -4,7 +4,7 @@ import re
 import time
 
 from .. import telemetry
-from ..feeds import msrc_api
+from ..feeds import enrichment, msrc_api
 from ..feeds.msrc_api import MsrcApiError
 from ..models.vulnerability import (
     SEVERITY_ORDER,
@@ -18,6 +18,11 @@ _CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
 # How many recent months a KB lookup scans before giving up
 KB_SCAN_MONTHS = 6
 
+# Supersedence chain walking: max hops followed and how many monthly docs
+# (starting at the queried KB's month) may be scanned for predecessors
+CHAIN_MAX_DEPTH = 12
+CHAIN_SCAN_MONTHS = 24
+
 MAX_LIMIT = 100
 
 
@@ -30,7 +35,10 @@ async def msrc_search(
     severity: str | None = None,
     exploited: bool | None = None,
     publicly_disclosed: bool | None = None,
+    kev: bool | None = None,
+    min_epss: float | None = None,
     min_cvss: float | None = None,
+    include_chain: bool = False,
     limit: int = 10,
     offset: int = 0,
     include_stats: bool = False,
@@ -40,16 +48,25 @@ async def msrc_search(
     Combines keyword search, CVE/KB lookup, and product/severity/exploitation
     filtering into a single flexible tool. All filter parameters are optional
     and can be combined. When no filters are provided, returns the most urgent
-    vulnerabilities from the latest Patch Tuesday release (exploited first,
-    then by severity and CVSS score).
+    vulnerabilities from the latest Patch Tuesday release (CISA-KEV-listed or
+    exploited first, then by EPSS exploitation probability, severity, and CVSS
+    score). Results are enriched with EPSS scores (FIRST.org daily exploit
+    prediction, 0-1) and CISA KEV (Known Exploited Vulnerabilities) catalog
+    data when available.
 
     Use this tool to:
     - Get the latest Patch Tuesday overview (include_stats=True, limit=0)
     - Browse the most urgent fixes this month (no filters)
     - Look up a specific CVE with full detail (cve="CVE-2026-41108") -- works
-      across all months, returns KBs, affected products, CVSS, description, FAQs
+      across all months, returns KBs, affected products, CVSS, description,
+      FAQs, EPSS score, and KEV status
     - Find which CVEs a KB article fixes (kb="5094123" or kb="KB5094123") --
       scans recent months
+    - Check whether a KB has been superseded by newer patches (kb="5087538",
+      include_chain=True) -- walks Microsoft-stated supersedence links
+    - Find KEV-listed CVEs this month (kev=True) -- confirmed exploited, with
+      federal remediation due dates
+    - High exploitation probability (min_epss=0.5) -- EPSS >= 50%
     - Search by keyword (query="Exchange" or query="DNS spoofing")
     - Filter to a product (product="Windows Server 2022") -- partial match
     - Filter by severity (severity="Critical") -- Critical/Important/Moderate/Low
@@ -76,25 +93,35 @@ async def msrc_search(
         severity: Optional maximum-severity filter. Valid values: Critical,
             Important, Moderate, Low.
         exploited: Optional filter for vulnerabilities known to be exploited
-            in the wild (True) or not (False).
+            in the wild (True) or not (False), per Microsoft's assessment.
         publicly_disclosed: Optional filter for publicly disclosed
             vulnerabilities.
+        kev: Optional filter for CVEs on (True) or off (False) the CISA Known
+            Exploited Vulnerabilities catalog.
+        min_epss: Optional minimum EPSS score (0-1), the probability of
+            exploitation in the next 30 days (e.g. 0.5 for >= 50%).
         min_cvss: Optional minimum CVSS base score (0-10).
+        include_chain: When True together with kb=, adds a supersedence_chain
+            showing which KBs this KB replaces (newest to oldest), walked from
+            Microsoft-stated supersedence links. Ignored without kb=.
         limit: Maximum number of results to return (default: 10, max: 100).
             Set to 0 with include_stats=True for a stats-only month overview.
         offset: Number of results to skip for pagination (default: 0).
         include_stats: When True, includes aggregate counts (by severity,
-            impact, product family, exploited, publicly disclosed) for the
-            filtered result set.
+            impact, product family, exploited, KEV, publicly disclosed) for
+            the filtered result set.
 
     Returns:
         Dictionary with:
         - month: Release ID (e.g. "2026-Jun") and title/release date
         - total_found: Number of vulnerabilities matching the filters
         - vulnerabilities: List of compact vulnerability summaries (up to
-          limit); full detail returned for cve= lookups
+          limit) with epss_score and kev flag when available; full detail
+          (epss_percentile, KEV due dates) returned for cve= lookups
         - filters_applied: Summary of which filters were used
         - stats: (only when include_stats=True) aggregate counts
+        - supersedence_chain / chain_complete: (only for kb= lookups with
+          include_chain=True) the walked chain, newest to oldest
     """
     start = time.perf_counter()
     result = await _search_impl(
@@ -106,7 +133,10 @@ async def msrc_search(
         severity=severity,
         exploited=exploited,
         publicly_disclosed=publicly_disclosed,
+        kev=kev,
+        min_epss=min_epss,
         min_cvss=min_cvss,
+        include_chain=include_chain,
         limit=limit,
         offset=offset,
         include_stats=include_stats,
@@ -129,7 +159,10 @@ async def _search_impl(
     severity: str | None,
     exploited: bool | None,
     publicly_disclosed: bool | None,
+    kev: bool | None,
+    min_epss: float | None,
     min_cvss: float | None,
+    include_chain: bool,
     limit: int,
     offset: int,
     include_stats: bool,
@@ -140,7 +173,7 @@ async def _search_impl(
 
     # --- KB fast path: which CVEs does this KB fix ---
     if kb:
-        return await _lookup_kb(kb)
+        return await _lookup_kb(kb, include_chain)
 
     filters_applied = _build_filters_summary(
         query=query,
@@ -149,6 +182,8 @@ async def _search_impl(
         severity=severity,
         exploited=exploited,
         publicly_disclosed=publicly_disclosed,
+        kev=kev,
+        min_epss=min_epss,
         min_cvss=min_cvss,
         offset=offset,
     )
@@ -184,6 +219,10 @@ async def _search_impl(
             return _error(f"No security update release found for {month_id}.", filters_applied)
         return _error(str(exc), filters_applied)
 
+    # Enrich the whole month (not just the returned page) so KEV/EPSS
+    # filtering and sorting stay consistent across pagination
+    await _enrich(release.vulnerabilities)
+
     matched = _filter_vulnerabilities(
         release.vulnerabilities,
         query=query,
@@ -191,6 +230,8 @@ async def _search_impl(
         severity=severity,
         exploited=exploited,
         publicly_disclosed=publicly_disclosed,
+        kev=kev,
+        min_epss=min_epss,
         min_cvss=min_cvss,
     )
     matched = sort_vulnerabilities(matched)
@@ -206,6 +247,20 @@ async def _search_impl(
             id=release.id, vulnerabilities=matched
         ).stats()
     return response
+
+
+async def _enrich(vulnerabilities: list[Vulnerability]) -> None:
+    """Attach KEV and EPSS data in place. Best-effort: fetch failures leave
+    the enrichment fields unset and never raise."""
+    kev_map = await enrichment.fetch_kev()
+    epss_map = await enrichment.fetch_epss([v.cve for v in vulnerabilities])
+    for v in vulnerabilities:
+        kev_entry = kev_map.get(v.cve)
+        if kev_entry is not None:
+            v.kev = kev_entry
+        scores = epss_map.get(v.cve)
+        if scores is not None:
+            v.epss_score, v.epss_percentile = scores
 
 
 async def _lookup_cve(cve: str) -> dict:
@@ -233,6 +288,8 @@ async def _lookup_cve(cve: str) -> dict:
             filters_applied,
         )
 
+    await _enrich([vuln])
+
     return {
         **_release_header(release),
         "total_found": 1,
@@ -241,9 +298,11 @@ async def _lookup_cve(cve: str) -> dict:
     }
 
 
-async def _lookup_kb(kb: str) -> dict:
+async def _lookup_kb(kb: str, include_chain: bool = False) -> dict:
     kb_number = kb.strip().upper().removeprefix("KB").strip()
     filters_applied = {"kb": f"KB{kb_number}"}
+    if include_chain:
+        filters_applied["include_chain"] = True
     if not kb_number.isdigit():
         return _error(
             f"Invalid KB number: {kb!r}. Expected e.g. '5094123' or 'KB5094123'.",
@@ -266,18 +325,116 @@ async def _lookup_kb(kb: str) -> dict:
             if any(k.kb == kb_number for k in v.kb_articles)
         ]
         if matched:
+            await _enrich(matched)
             matched = sort_vulnerabilities(matched)
-            return {
+            response = {
                 **_release_header(release),
                 "total_found": len(matched),
                 "vulnerabilities": [v.to_summary_dict() for v in matched],
                 "filters_applied": filters_applied,
             }
+            if include_chain:
+                response.update(await _walk_chain(kb_number, release, entries))
+            return response
 
     return _error(
         f"KB{kb_number} was not found in the last {KB_SCAN_MONTHS} monthly releases.",
         filters_applied,
     )
+
+
+def _collect_predecessors(kb_number: str, release: MonthlyRelease) -> dict[str, int]:
+    """Count the distinct Microsoft-stated Supercedence values for a KB.
+
+    A KB can list different predecessors for different product groups, so the
+    same KB appears with multiple supercedence values across the month's
+    remediation entries. Non-numeric values (after stripping a KB prefix) are
+    discarded rather than guessed at.
+    """
+    counts: dict[str, int] = {}
+    for v in release.vulnerabilities:
+        for k in v.kb_articles:
+            if k.kb != kb_number or not k.supercedence:
+                continue
+            pred = k.supercedence.strip().upper().removeprefix("KB").strip()
+            if pred.isdigit():
+                counts[pred] = counts.get(pred, 0) + 1
+    return counts
+
+
+async def _find_kb_month(kb_number: str, months: list[dict]) -> MonthlyRelease | None:
+    """Scan monthly docs (slim parse) for the first one containing a KB."""
+    for entry in months:
+        try:
+            release = await msrc_api.fetch_month(entry["id"], slim=True)
+        except MsrcApiError:
+            continue
+        if any(k.kb == kb_number for v in release.vulnerabilities for k in v.kb_articles):
+            return release
+    return None
+
+
+async def _walk_chain(kb_number: str, release: MonthlyRelease, entries: list[dict]) -> dict:
+    """Walk Microsoft-stated supersedence links backward from a KB.
+
+    Only explicit Supercedence values are followed -- no date or product
+    heuristics -- because wrongly calling a patch superseded is worse than an
+    incomplete chain. Newest -> oldest, capped by CHAIN_MAX_DEPTH hops within
+    a CHAIN_SCAN_MONTHS window starting at the queried KB's month.
+    """
+    start_idx = next((i for i, e in enumerate(entries) if e["id"] == release.id), 0)
+    window = entries[start_idx : start_idx + CHAIN_SCAN_MONTHS]
+
+    chain: list[dict] = []
+    seen = {kb_number}
+    current_kb = kb_number
+    current_release = release
+    pos = 0  # index of the current KB's month within the window
+    complete = False
+    note: str | None = None
+
+    for _ in range(CHAIN_MAX_DEPTH):
+        hop: dict = {"kb": current_kb, "month": current_release.id, "source": "microsoft"}
+        predecessors = _collect_predecessors(current_kb, current_release)
+        if not predecessors:
+            # Microsoft states no predecessor: the chain ends here, complete
+            chain.append(hop)
+            complete = True
+            break
+
+        ordered = sorted(predecessors.items(), key=lambda item: (-item[1], item[0]))
+        target = ordered[0][0]
+        hop["supersedes"] = target
+        if len(ordered) > 1:
+            hop["other_predecessors"] = [pred for pred, _ in ordered[1:]]
+        chain.append(hop)
+
+        if target in seen:
+            note = f"Stopped: KB{target} already appears in the chain (cycle)."
+            break
+        seen.add(target)
+
+        # Predecessors are older, so scan from the current month backward
+        # (same month included: out-of-band updates can supersede within it)
+        predecessor_release = await _find_kb_month(target, window[pos:])
+        if predecessor_release is None:
+            note = (
+                f"Stopped: KB{target} was not found within the "
+                f"{CHAIN_SCAN_MONTHS}-month scan window."
+            )
+            break
+        current_kb = target
+        current_release = predecessor_release
+        pos = next(
+            (i for i, e in enumerate(window) if e["id"] == predecessor_release.id), pos
+        )
+    else:
+        note = f"Stopped: chain depth cap ({CHAIN_MAX_DEPTH} hops) reached."
+
+    result: dict = {"supersedence_chain": chain, "chain_complete": complete}
+    if note:
+        result["chain_note"] = note
+    return result
 
 
 def _filter_vulnerabilities(
@@ -287,6 +444,8 @@ def _filter_vulnerabilities(
     severity: str | None,
     exploited: bool | None,
     publicly_disclosed: bool | None,
+    kev: bool | None,
+    min_epss: float | None,
     min_cvss: float | None,
 ) -> list[Vulnerability]:
     query_lower = query.lower() if query else None
@@ -308,6 +467,10 @@ def _filter_vulnerabilities(
         if exploited is not None and v.exploited != exploited:
             continue
         if publicly_disclosed is not None and v.publicly_disclosed != publicly_disclosed:
+            continue
+        if kev is not None and (v.kev is not None) != kev:
+            continue
+        if min_epss is not None and (v.epss_score is None or v.epss_score < min_epss):
             continue
         if min_cvss is not None and (v.max_cvss is None or v.max_cvss < min_cvss):
             continue
