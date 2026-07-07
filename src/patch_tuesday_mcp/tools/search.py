@@ -53,9 +53,12 @@ async def msrc_search(
     Combines keyword search, CVE/KB lookup, and product/severity/exploitation
     filtering into a single flexible tool. All filter parameters are optional
     and can be combined. When no filters are provided, returns the most urgent
-    vulnerabilities from the latest Patch Tuesday release (CISA-KEV-listed or
-    exploited first, then by EPSS exploitation probability, severity, and CVSS
-    score). Results are enriched with EPSS scores (FIRST.org daily exploit
+    vulnerabilities from the most recent *released* Patch Tuesday (CISA-KEV-
+    listed or exploited first, then by EPSS exploitation probability, severity,
+    and CVSS score). The upcoming month's document exists before its Patch
+    Tuesday but only holds early Chromium/third-party and out-of-band entries;
+    it is skipped by default and served only when requested via month=.
+    Results are enriched with EPSS scores (FIRST.org daily exploit
     prediction, 0-1) and CISA KEV (Known Exploited Vulnerabilities) catalog
     data when available.
 
@@ -93,8 +96,10 @@ async def msrc_search(
             months (up to 6), or only the given month when month= is also set.
             Honors limit/offset; other filters are ignored.
         month: Optional monthly release to search, formatted "2026-Apr" or
-            "2026-04". Defaults to the latest available release. Combined
-            with kb=, restricts the KB lookup to that month.
+            "2026-04". Defaults to the most recent release whose Patch
+            Tuesday (second Tuesday of the month) has already occurred; pass
+            the upcoming month explicitly to see its pre-release entries.
+            Combined with kb=, restricts the KB lookup to that month.
         product: Optional product name filter (case-insensitive partial match
             against affected product names, e.g. "Windows Server 2022").
         severity: Optional maximum-severity filter. Valid values: Critical,
@@ -131,6 +136,10 @@ async def msrc_search(
           include_chain=True) the walked chain, newest to oldest
         - error / error_kind: (only on failure) a message plus a category
           (invalid_input, not_found, upstream)
+        - note: (when relevant) explains month selection, e.g. that a newer
+          pre-Patch-Tuesday document was skipped, or (with
+          release_status="pre-patch-tuesday") that the requested month has
+          not had its Patch Tuesday yet
     """
     start = time.perf_counter()
     result = await _search_impl(
@@ -216,9 +225,10 @@ async def _search_impl(
     limit = max(0, min(limit, MAX_LIMIT))
     offset = max(0, offset)
 
+    skipped_pre_release: str | None = None
     try:
         if month_id is None:
-            month_id = await msrc_api.get_latest_month_id()
+            month_id, skipped_pre_release = await msrc_api.get_default_month_id()
         release = await msrc_api.fetch_month(month_id)
     except MsrcApiError as exc:
         if "not found" in str(exc):
@@ -254,6 +264,25 @@ async def _search_impl(
     }
     if include_stats:
         response["stats"] = compute_stats(matched)
+
+    if skipped_pre_release:
+        release_time = msrc_api.patch_tuesday_utc(skipped_pre_release)
+        response["note"] = (
+            f"A newer document for {skipped_pre_release} exists but its Patch Tuesday "
+            f"({release_time:%Y-%m-%d}) has not occurred yet; showing the latest full "
+            f"release. Pass month='{skipped_pre_release}' to see its early and "
+            f"out-of-band entries."
+        )
+    elif month is not None:
+        release_time = msrc_api.patch_tuesday_utc(month_id)
+        if release_time is not None and release_time > msrc_api.utcnow():
+            response["release_status"] = "pre-patch-tuesday"
+            response["note"] = (
+                f"{month_id}'s Patch Tuesday is {release_time:%Y-%m-%d}; this document "
+                "currently contains only early and out-of-band entries (e.g. "
+                "Chromium/third-party CVEs) and will fill in on release day."
+            )
+
     return response
 
 

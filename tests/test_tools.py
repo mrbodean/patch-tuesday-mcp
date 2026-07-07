@@ -1,6 +1,7 @@
 """Tests for the msrc_search consolidated tool (mocked feeds layer)."""
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -546,6 +547,51 @@ async def test_include_chain_without_kb_is_ignored():
     assert "error" not in result
     assert "supersedence_chain" not in result
     assert "chain_complete" not in result
+
+
+async def test_default_month_skips_pre_patch_tuesday_document(monkeypatch):
+    """Before the upcoming month's Patch Tuesday, no-month queries serve the
+    latest full release and say why; the partial month stays reachable."""
+    _patch_chain_months(
+        monkeypatch,
+        {
+            "2026-Jul": _synthetic_month("2026-Jul", "", [("5400001", None)]),
+            "2026-Jun": _synthetic_month("2026-Jun", "", [("5300001", None)]),
+        },
+    )
+    monkeypatch.setattr(msrc_api, "utcnow", lambda: datetime(2026, 7, 7, tzinfo=timezone.utc))
+
+    result = await msrc_search()
+    assert result["month"] == "2026-Jun"
+    assert "2026-Jul" in result["note"] and "2026-07-14" in result["note"]
+    assert "release_status" not in result
+
+    # Explicitly requesting the pre-release month works, clearly annotated
+    result = await msrc_search(month="2026-Jul")
+    assert result["month"] == "2026-Jul"
+    assert result["release_status"] == "pre-patch-tuesday"
+    assert "2026-07-14" in result["note"]
+
+    # A past month requested explicitly gets no annotation
+    result = await msrc_search(month="2026-Jun")
+    assert "note" not in result
+    assert "release_status" not in result
+
+
+async def test_default_month_after_patch_tuesday(monkeypatch):
+    _patch_chain_months(
+        monkeypatch,
+        {
+            "2026-Jul": _synthetic_month("2026-Jul", "", [("5400001", None)]),
+            "2026-Jun": _synthetic_month("2026-Jun", "", [("5300001", None)]),
+        },
+    )
+    monkeypatch.setattr(msrc_api, "utcnow", lambda: datetime(2026, 7, 20, tzinfo=timezone.utc))
+
+    result = await msrc_search()
+    assert result["month"] == "2026-Jul"
+    assert "note" not in result
+    assert "release_status" not in result
 
 
 async def test_kb_lookup_respects_limit_and_offset(monkeypatch):

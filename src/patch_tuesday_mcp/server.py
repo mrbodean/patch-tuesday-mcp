@@ -28,7 +28,10 @@ mcp = FastMCP(
         "min_epss=0.5 (EPSS >= 50%). Add include_chain=True to a kb= lookup "
         "to walk Microsoft-stated supersedence links (which KBs it replaces). "
         "Set include_stats=True with limit=0 for a month overview (counts by "
-        "severity, impact, product family, exploited, KEV)."
+        "severity, impact, product family, exploited, KEV). When no month is "
+        "given, results default to the most recent release whose Patch "
+        "Tuesday has occurred; the upcoming month's pre-release document "
+        "(early/out-of-band entries only) is available via month=."
     ),
 )
 

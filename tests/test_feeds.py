@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -13,8 +14,10 @@ from patch_tuesday_mcp.feeds.msrc_api import (
     fetch_month,
     fetch_update_index,
     find_month_for_cve,
+    get_default_month_id,
     get_latest_month_id,
     normalize_month_id,
+    patch_tuesday_utc,
 )
 
 FIXTURE = Path(__file__).parent / "fixtures" / "cvrf_sample.json"
@@ -100,6 +103,50 @@ async def test_index_is_cached(mock_api):
 
 async def test_get_latest_month_id(mock_api):
     assert await get_latest_month_id() == "2026-Jun"
+
+
+def test_patch_tuesday_utc():
+    # Second Tuesday of the month, 18:00 UTC (~10 AM Pacific publish time)
+    assert patch_tuesday_utc("2026-Jul") == datetime(2026, 7, 14, 18, 0, tzinfo=timezone.utc)
+    assert patch_tuesday_utc("2026-Jun") == datetime(2026, 6, 9, 18, 0, tzinfo=timezone.utc)
+    assert patch_tuesday_utc("2025-Jan") == datetime(2025, 1, 14, 18, 0, tzinfo=timezone.utc)
+    assert patch_tuesday_utc("garbage") is None
+    assert patch_tuesday_utc("2026-13") is None
+    assert patch_tuesday_utc("") is None
+
+
+async def test_get_default_month_id_skips_pre_release_month(monkeypatch):
+    index = {
+        "value": [
+            {
+                "ID": "2026-Jul",
+                "DocumentTitle": "July 2026 Security Updates",
+                "InitialReleaseDate": "2026-07-01T07:00:00Z",
+                "CurrentReleaseDate": "2026-07-06T07:00:00Z",
+            },
+            {
+                "ID": "2026-Jun",
+                "DocumentTitle": "June 2026 Security Updates",
+                "InitialReleaseDate": "2026-06-09T07:00:00Z",
+                "CurrentReleaseDate": "2026-07-01T07:00:00Z",
+            },
+        ]
+    }
+
+    async def fake_get_json(url, timeout=60.0):
+        return index
+
+    monkeypatch.setattr(msrc_api, "_get_json", fake_get_json)
+
+    # Before July's Patch Tuesday: June is the default, July flagged as skipped
+    before = datetime(2026, 7, 7, tzinfo=timezone.utc)
+    assert await get_default_month_id(before) == ("2026-Jun", "2026-Jul")
+
+    # At and after the publish moment: July becomes the default
+    at_release = datetime(2026, 7, 14, 18, 0, tzinfo=timezone.utc)
+    assert await get_default_month_id(at_release) == ("2026-Jul", None)
+    after = datetime(2026, 7, 20, tzinfo=timezone.utc)
+    assert await get_default_month_id(after) == ("2026-Jul", None)
 
 
 async def test_fetch_month_parses_and_caches(mock_api):

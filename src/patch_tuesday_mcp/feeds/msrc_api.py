@@ -6,7 +6,7 @@ https://github.com/microsoft/MSRC-Microsoft-Security-Updates-API
 
 import asyncio
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 
@@ -109,6 +109,55 @@ def normalize_month_id(month: str) -> str | None:
     if month_title in _MONTH_ABBRS:
         return f"{year}-{month_title}"
     return None
+
+
+def utcnow() -> datetime:
+    """Current UTC time (separate function so tests can freeze the clock)."""
+    return datetime.now(timezone.utc)
+
+
+def patch_tuesday_utc(month_id: str) -> datetime | None:
+    """Expected Patch Tuesday publish time (UTC) for a month ID like "2026-Jul".
+
+    Patch Tuesday is the second Tuesday of the month; MSRC publishes the full
+    document around 10 AM Pacific (~18:00 UTC). Returns None when the ID
+    cannot be parsed.
+    """
+    parts = month_id.split("-") if month_id else []
+    if len(parts) != 2 or not parts[0].isdigit() or parts[1] not in _MONTH_ABBRS:
+        return None
+    year = int(parts[0])
+    month = _MONTH_ABBRS.index(parts[1]) + 1
+    first_weekday = datetime(year, month, 1, tzinfo=timezone.utc).weekday()
+    first_tuesday = 1 + (1 - first_weekday) % 7  # Tuesday is weekday 1
+    return datetime(year, month, first_tuesday + 7, 18, 0, tzinfo=timezone.utc)
+
+
+async def get_default_month_id(now: datetime | None = None) -> tuple[str, str | None]:
+    """Pick the default month for searches: the latest *released* Patch Tuesday.
+
+    MSRC creates next month's document before its Patch Tuesday; until release
+    day it only accumulates early Chromium/third-party and out-of-band entries,
+    which would make "this month's Patch Tuesday" look almost empty. Such
+    pre-release months are skipped by default and only served when explicitly
+    requested via month=.
+
+    Returns (month_id, skipped_pre_release_month_id_or_None).
+    """
+    entries = await fetch_update_index()
+    if not entries:
+        raise MsrcApiError("MSRC update index returned no security update documents")
+    if now is None:
+        now = utcnow()
+
+    skipped: str | None = None
+    for entry in entries:
+        release_time = patch_tuesday_utc(entry["id"])
+        if release_time is None or release_time <= now:
+            return entry["id"], skipped
+        if skipped is None:
+            skipped = entry["id"]
+    return entries[0]["id"], None  # defensive: index only holds future months
 
 
 async def _get_json(url: str, timeout: float = 60.0) -> dict:
