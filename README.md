@@ -53,7 +53,7 @@ A free remote instance is available at:
 ```
 https://patch-tuesday-mcp.happyrock-b60185ec.eastus.azurecontainerapps.io/mcp
 ```
-No account or API key needed. The endpoint is rate-limited per IP (60 requests/minute) and serves the same public data as a local install — if you hit limits or want guaranteed availability, run it locally (below) or [self-host your own](#self-hosting-as-a-remote-mcp-server).
+No account or API key needed. The endpoint is rate-limited per IP (60 requests/minute) and serves the same public data as a local install — if you hit limits or want guaranteed availability, run it locally (below) or [self-host your own](#self-hosting-as-a-remote-mcp-server). Only minimal, anonymized usage data is recorded — see [Telemetry & Privacy](#telemetry--privacy).
 
 ## Requirements
 
@@ -262,6 +262,12 @@ limiting) and runs stateless, so it can scale to multiple replicas behind a
 load balancer without session affinity.
 
 See [docs/deploy-azure.md](docs/deploy-azure.md) for a full Azure Container Apps deployment guide.
+
+## Telemetry & Privacy
+
+- **Local stdio (the default): no telemetry, ever** — there is no code path that sends anything.
+- **The hosted endpoint** records minimal usage data to Azure Application Insights (90-day retention): a daily-salted hash of the client IP (raw IPs are never stored; they are only held in memory for rate limiting), request path and timestamp, which tool parameters were used (parameter *names* only — never your query text or CVE/KB values; only the low-cardinality `month` and `severity` values are kept), result counts, latency, and error categories. No cookies, no accounts, no request/response bodies.
+- **Self-hosted HTTP** collects nothing unless you set `APPLICATIONINSIGHTS_CONNECTION_STRING` to your own resource — then the same minimal set flows to your instance instead.
 
 ## Development
 
