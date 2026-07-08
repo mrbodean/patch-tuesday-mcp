@@ -120,7 +120,7 @@ pip install --upgrade patch-tuesday-mcp
 [![Set up in Copilot CLI](https://img.shields.io/badge/Set_up_in-Copilot_CLI-28a745?style=flat-square&logo=github)](https://docs.github.com/en/copilot/how-tos/use-copilot-agents/use-copilot-cli)
 
 > **One-click setup:** Click the VS Code badge for automatic configuration (requires `uv` installed)
-> **Manual setup:** See instructions below for Cursor, Claude Code, Copilot CLI, or Claude Desktop
+> **Manual setup:** See instructions below for VS Code, Cursor, Claude Code, Copilot CLI, or Claude Desktop
 
 ## Features
 
@@ -152,6 +152,33 @@ Or if installed with pip:
 
 ```bash
 patch-tuesday-mcp
+```
+
+### Connect from VS Code
+
+**Option 1: One-Click Install (Recommended)**
+
+Click the **[Set up in VS Code](#quick-setup)** badge at the top of this README for automatic configuration (requires `uv` installed).
+
+**Option 2: Manual Configuration**
+
+VS Code stores MCP servers in a **dedicated `mcp.json` file — not `settings.json`.** Open the Command Palette (`Ctrl+Shift+P` on Windows/Linux, `Cmd+Shift+P` on macOS) and run one of:
+
+- **`MCP: Open User Configuration`** — edits your user-level `mcp.json` (available in every workspace)
+- **`MCP: Open Workspace Folder Configuration`** — edits a project-local `.vscode/mcp.json`
+
+Then add the server. Note that VS Code uses a top-level **`"servers"`** key (unlike the `"mcpServers"` key used by the other clients below):
+
+```json
+{
+  "servers": {
+    "patch-tuesday": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["patch-tuesday-mcp"]
+    }
+  }
+}
 ```
 
 ### Connect from Claude Desktop
