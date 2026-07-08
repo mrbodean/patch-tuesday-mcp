@@ -263,10 +263,6 @@ load balancer without session affinity.
 
 See [docs/deploy-azure.md](docs/deploy-azure.md) for a full Azure Container Apps deployment guide.
 
-### Privacy
-
-**Local stdio usage (the default) sends no telemetry — ever.** Telemetry only exists for self-hosted HTTP deployments, is off unless the operator sets their own Application Insights connection string, and never stores raw client IPs (they are hashed with a daily salt for unique-user counts).
-
 ## Development
 
 ```bash
