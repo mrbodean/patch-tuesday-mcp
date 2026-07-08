@@ -4,7 +4,7 @@
 
 mcp-name: io.github.jonnybottles/patch-tuesday
 
-Ask your AI assistant about Microsoft security updates. This Python-based MCP (Model Context Protocol) server connects AI assistants like Claude to the [MSRC Security Update Guide](https://msrc.microsoft.com/update-guide) — the authoritative source for every CVE Microsoft patches — enabling natural-language queries over Patch Tuesday releases: CVEs, KB articles, severity ratings, CVSS scores, affected products, and exploited-in-the-wild status.
+Ask your AI assistant about Microsoft security updates. This Python-based MCP (Model Context Protocol) server connects AI assistants like Claude, Copilot, and ChatGPT to the [MSRC Security Update Guide](https://msrc.microsoft.com/update-guide) — the authoritative source for every CVE Microsoft patches — enabling natural-language queries over Patch Tuesday releases: CVEs, KB articles, severity ratings, CVSS scores, affected products, and exploited-in-the-wild status.
 
 ## What It Does
 
