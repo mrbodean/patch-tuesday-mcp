@@ -53,15 +53,6 @@ A free remote instance is available at:
 ```
 https://patch-tuesday-mcp.happyrock-b60185ec.eastus.azurecontainerapps.io/mcp
 ```
-
-Connect from Claude Code:
-
-```bash
-claude mcp add --transport http patch-tuesday https://patch-tuesday-mcp.happyrock-b60185ec.eastus.azurecontainerapps.io/mcp
-```
-
-Or add the same URL as a custom connector in Claude (Settings → Connectors), or in any other MCP client that accepts a remote server URL.
-
 No account or API key needed. The endpoint is rate-limited per IP (60 requests/minute) and serves the same public data as a local install — if you hit limits or want guaranteed availability, run it locally (below) or [self-host your own](#self-hosting-as-a-remote-mcp-server).
 
 ## Requirements
