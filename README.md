@@ -46,17 +46,9 @@ Other things it deliberately gets right:
 - **One tool, not thirty** — a single consolidated `msrc_search` keeps your AI client's context lean and tool selection reliable
 - **Built for the monthly workflow** — triage a release, brief your team, prioritize patching, then get on with your life
 
-### Roadmap
-
-- Cross-month keyword search
-
-#### Possible future add-on: inferred supersedence graph
-
-Microsoft's `Supercedence` field is sparse — it's often missing for older KBs and many cumulative updates. Filling those gaps requires *heuristic inference* (e.g., "a newer cumulative update for the same product implicitly supersedes the older one"), which in turn means correctly classifying update types (cumulative vs. security-only vs. servicing-stack) across Microsoft's inconsistent product naming, ideally backed by a precomputed KB graph rebuilt monthly after each Patch Tuesday. This is deliberately **not** implemented today: wrongly marking a patch as superseded would cause someone to skip a patch they actually need, and that failure mode is worse than an incomplete chain. If it lands, inferred links will be explicitly labeled (`"inferred": true`) and kept separate from Microsoft-stated ones. If you'd use this, please open an issue — demand is what will prioritize it.
-
 ## Try It Instantly — Hosted Endpoint (No Install)
 
-A free public instance runs on Azure Container Apps. Point any MCP client that supports remote (streamable HTTP) servers at:
+A free remote instance is available at:
 
 ```
 https://patch-tuesday-mcp.happyrock-b60185ec.eastus.azurecontainerapps.io/mcp
