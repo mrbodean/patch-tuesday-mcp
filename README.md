@@ -261,7 +261,7 @@ HTTP mode also serves `GET /health` (liveness endpoint, exempt from rate
 limiting) and runs stateless, so it can scale to multiple replicas behind a
 load balancer without session affinity.
 
-See [docs/deploy-azure.md](docs/deploy-azure.md) for a full Azure Container Apps deployment guide.
+The container runs on any host that can serve HTTP — Azure Container Apps, Cloud Run, Fly.io, or a plain VM.
 
 ## Telemetry & Privacy
 

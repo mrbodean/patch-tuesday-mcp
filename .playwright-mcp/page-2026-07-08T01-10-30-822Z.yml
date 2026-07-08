@@ -1,0 +1,314 @@
+- generic [active] [ref=f6e1]:
+  - link "Skip to main content" [ref=f6e2] [cursor=pointer]:
+    - /url: "#content"
+  - banner [ref=f6e3]:
+    - generic [ref=f6e5]:
+      - generic [ref=f6e6]:
+        - link "PyPI" [ref=f6e8] [cursor=pointer]:
+          - /url: /
+          - img "PyPI" [ref=f6e9]
+        - search [ref=f6e10]:
+          - generic [ref=f6e11]: Search PyPI
+          - textbox "Search PyPI" [ref=f6e12]:
+            - /placeholder: Type '/' to search projects
+          - button "Search" [ref=f6e13]:
+            - generic [ref=f6e15]: Search
+      - navigation "Main navigation" [ref=f6e18]:
+        - button "View menu" [ref=f6e19] [cursor=pointer]:
+          - img "User Image" [ref=f6e20]
+          - text: jonnybottles
+  - main [ref=f6e23]:
+    - generic [ref=f6e24]:
+      - navigation "Breadcrumbs" [ref=f6e25]:
+        - list [ref=f6e26]:
+          - listitem [ref=f6e27]: Your account
+      - generic [ref=f6e28]:
+        - navigation "Account navigation" [ref=f6e31]:
+          - list [ref=f6e32]:
+            - listitem [ref=f6e33]:
+              - link "Your projects" [ref=f6e34] [cursor=pointer]:
+                - /url: /manage/projects/
+                - text: Your projects
+            - listitem [ref=f6e36]:
+              - link "Your organizations" [ref=f6e37] [cursor=pointer]:
+                - /url: /manage/organizations/
+                - text: Your organizations
+            - listitem [ref=f6e39]:
+              - link "Account settings" [ref=f6e40] [cursor=pointer]:
+                - /url: /manage/account/
+                - text: Account settings
+            - listitem [ref=f6e42]:
+              - link "Publishing" [ref=f6e43] [cursor=pointer]:
+                - /url: /manage/account/publishing/
+                - text: Publishing
+        - generic [ref=f6e45]:
+          - navigation "Account navigation":
+            - list:
+              - listitem
+              - listitem
+              - listitem
+              - listitem
+          - generic [ref=f6e46]:
+            - generic [ref=f6e47]:
+              - heading "Trusted Publisher Management" [level=1] [ref=f6e48]
+              - paragraph [ref=f6e49]: OpenID Connect (OIDC) provides a flexible, credential-free mechanism for delegating publishing authority for a PyPI package to a trusted third party service, like GitHub Actions.
+              - paragraph [ref=f6e50]: PyPI users and projects can use trusted publishers to automate their release processes, without needing to use API tokens or passwords.
+              - paragraph [ref=f6e51]:
+                - text: You can read more about trusted publishers and how to use them
+                - link "here" [ref=f6e52] [cursor=pointer]:
+                  - /url: https://docs.pypi.org/trusted-publishers/
+                - text: .
+              - heading "Manage publishers" [level=2] [ref=f6e53]
+              - heading "Projects with active publishers" [level=3] [ref=f6e54]
+              - table [ref=f6e55]:
+                - rowgroup [ref=f6e56]:
+                  - row "Project" [ref=f6e57]:
+                    - columnheader "Project" [ref=f6e58]
+                    - columnheader [ref=f6e59]
+                - rowgroup [ref=f6e60]:
+                  - row "azure-updates-mcp Manage" [ref=f6e61]:
+                    - cell "azure-updates-mcp" [ref=f6e62]
+                    - cell "Manage" [ref=f6e63]:
+                      - link "Manage" [ref=f6e64] [cursor=pointer]:
+                        - /url: /manage/project/azure-updates-mcp/settings/publishing/
+                  - row "m365-roadmap-mcp Manage" [ref=f6e65]:
+                    - cell "m365-roadmap-mcp" [ref=f6e66]
+                    - cell "Manage" [ref=f6e67]:
+                      - link "Manage" [ref=f6e68] [cursor=pointer]:
+                        - /url: /manage/project/m365-roadmap-mcp/settings/publishing/
+              - heading "Pending publishers" [level=3] [ref=f6e69]
+              - paragraph [ref=f6e70]: No pending publishers are currently configured. Publishers for projects that don't exist yet can be added below.
+            - generic [ref=f6e71]:
+              - heading "Add a new pending publisher" [level=2] [ref=f6e72]
+              - paragraph [ref=f6e73]: You can use this page to register "pending" trusted publishers.
+              - paragraph [ref=f6e74]:
+                - text: These publishers behave similarly to trusted publishers registered against specific projects, except that they allow users to
+                - strong [ref=f6e75]: create
+                - text: the project if it doesn't already exist. Once the project is created, the "pending" publisher becomes an ordinary trusted publisher. You can read more about "pending" and ordinary trusted publishers
+                - link "here" [ref=f6e76] [cursor=pointer]:
+                  - /url: https://docs.pypi.org/trusted-publishers/
+                - text: .
+              - paragraph [ref=f6e77]:
+                - text: Configuring a "pending" publisher for a project name does
+                - strong [ref=f6e78]: not
+                - text: reserve that name. Until the project is created, any other user may create it, including via their own "pending" publisher.
+              - generic [ref=f6e79]:
+                - generic [ref=f6e80]:
+                  - button "GitHub" [ref=f6e81] [cursor=pointer]
+                  - button "GitLab" [ref=f6e82] [cursor=pointer]
+                  - button "Google" [ref=f6e83] [cursor=pointer]
+                  - button "ActiveState" [ref=f6e84] [cursor=pointer]
+                - generic [ref=f6e85]:
+                  - paragraph [ref=f6e86]:
+                    - text: Read more about GitHub Actions' OpenID Connect support
+                    - link "here" [ref=f6e87] [cursor=pointer]:
+                      - /url: https://docs.github.com/en/actions/deployment/security-hardening-your-deployments/about-security-hardening-with-openid-connect
+                    - text: .
+                  - generic [ref=f6e88]:
+                    - generic [ref=f6e89]:
+                      - generic [ref=f6e90]: PyPI Project Name (required)
+                      - textbox "PyPI Project Name (required) PyPI Project Name (required) PyPI Project Name (required) PyPI Project Name (required)" [ref=f6e91]:
+                        - /placeholder: project name
+                      - paragraph [ref=f6e92]: The project that will be created on PyPI when this publisher is used
+                    - generic [ref=f6e93]:
+                      - generic [ref=f6e94]: Owner (required)
+                      - textbox "Owner (required)" [ref=f6e95]:
+                        - /placeholder: owner
+                      - paragraph [ref=f6e96]: The GitHub organization name or GitHub username that owns the repository
+                    - generic [ref=f6e97]:
+                      - generic [ref=f6e98]: Repository name (required)
+                      - textbox "Repository name (required)" [ref=f6e99]:
+                        - /placeholder: repository
+                      - paragraph [ref=f6e100]: The name of the GitHub repository that contains the publishing workflow
+                    - generic [ref=f6e101]:
+                      - generic [ref=f6e102]: Workflow name (required)
+                      - textbox "Workflow name (required)" [ref=f6e103]:
+                        - /placeholder: workflow.yml
+                      - paragraph [ref=f6e104]:
+                        - text: The filename of the publishing workflow. This file should exist in the
+                        - code [ref=f6e105]: .github/workflows/
+                        - text: directory in the repository configured above.
+                    - generic [ref=f6e106]:
+                      - generic [ref=f6e107]: Environment name (optional)
+                      - textbox "Environment name (optional) Environment name (optional)" [ref=f6e108]:
+                        - /placeholder: pypi
+                      - paragraph [ref=f6e109]:
+                        - text: The name of the
+                        - link "GitHub Actions environment" [ref=f6e110] [cursor=pointer]:
+                          - /url: https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment
+                        - text: that the above workflow uses for publishing. This should be configured under the repository's settings. While not required, a dedicated publishing environment is
+                        - strong [ref=f6e111]: strongly
+                        - text: encouraged,
+                        - strong [ref=f6e112]: especially
+                        - text: if your repository has maintainers with commit access who shouldn't have PyPI publishing access.
+                    - button "Add" [ref=f6e114] [cursor=pointer]
+  - contentinfo [ref=f6e115]:
+    - generic [ref=f6e117]:
+      - generic [ref=f6e118]:
+        - heading "Help" [level=2] [ref=f6e119]
+        - navigation "Help navigation" [ref=f6e120]:
+          - list [ref=f6e121]:
+            - listitem [ref=f6e122]:
+              - link "Installing packages" [ref=f6e123] [cursor=pointer]:
+                - /url: https://packaging.python.org/tutorials/installing-packages/
+            - listitem [ref=f6e124]:
+              - link "Uploading packages" [ref=f6e125] [cursor=pointer]:
+                - /url: https://packaging.python.org/tutorials/packaging-projects/
+            - listitem [ref=f6e126]:
+              - link "User guide" [ref=f6e127] [cursor=pointer]:
+                - /url: https://packaging.python.org/
+            - listitem [ref=f6e128]:
+              - link "Project name retention" [ref=f6e129] [cursor=pointer]:
+                - /url: https://www.python.org/dev/peps/pep-0541/
+            - listitem [ref=f6e130]:
+              - link "FAQs" [ref=f6e131] [cursor=pointer]:
+                - /url: /help/
+      - generic [ref=f6e132]:
+        - heading "About PyPI" [level=2] [ref=f6e133]
+        - navigation "About PyPI navigation" [ref=f6e134]:
+          - list [ref=f6e135]:
+            - listitem [ref=f6e136]:
+              - link "PyPI Blog" [ref=f6e137] [cursor=pointer]:
+                - /url: https://blog.pypi.org
+            - listitem [ref=f6e138]:
+              - link "Infrastructure dashboard" [ref=f6e139] [cursor=pointer]:
+                - /url: https://dtdg.co/pypi
+            - listitem [ref=f6e140]:
+              - link "Statistics" [ref=f6e141] [cursor=pointer]:
+                - /url: /stats/
+            - listitem [ref=f6e142]:
+              - link "Logos & trademarks" [ref=f6e143] [cursor=pointer]:
+                - /url: /trademarks/
+            - listitem [ref=f6e144]:
+              - link "Our sponsors" [ref=f6e145] [cursor=pointer]:
+                - /url: /sponsors/
+      - generic [ref=f6e146]:
+        - heading "Contributing to PyPI" [level=2] [ref=f6e147]
+        - navigation "How to contribute navigation" [ref=f6e148]:
+          - list [ref=f6e149]:
+            - listitem [ref=f6e150]:
+              - link "Bugs and feedback" [ref=f6e151] [cursor=pointer]:
+                - /url: /help/#feedback
+            - listitem [ref=f6e152]:
+              - link "Contribute on GitHub" [ref=f6e153] [cursor=pointer]:
+                - /url: https://github.com/pypi/warehouse
+            - listitem [ref=f6e154]:
+              - link "Translate PyPI" [ref=f6e155] [cursor=pointer]:
+                - /url: https://hosted.weblate.org/projects/pypa/warehouse/
+            - listitem [ref=f6e156]:
+              - link "Sponsor PyPI" [ref=f6e157] [cursor=pointer]:
+                - /url: /sponsors/
+            - listitem [ref=f6e158]:
+              - link "Development credits" [ref=f6e159] [cursor=pointer]:
+                - /url: https://github.com/pypi/warehouse/graphs/contributors
+      - generic [ref=f6e160]:
+        - heading "Using PyPI" [level=2] [ref=f6e161]
+        - navigation "Using PyPI navigation" [ref=f6e162]:
+          - list [ref=f6e163]:
+            - listitem [ref=f6e164]:
+              - link "Terms of Service" [ref=f6e165] [cursor=pointer]:
+                - /url: https://policies.python.org/pypi.org/Terms-of-Service/
+            - listitem [ref=f6e166]:
+              - link "Report security issue" [ref=f6e167] [cursor=pointer]:
+                - /url: /security/
+            - listitem [ref=f6e168]:
+              - link "Code of conduct" [ref=f6e169] [cursor=pointer]:
+                - /url: https://policies.python.org/python.org/code-of-conduct/
+            - listitem [ref=f6e170]:
+              - link "Privacy Notice" [ref=f6e171] [cursor=pointer]:
+                - /url: https://policies.python.org/pypi.org/Privacy-Notice/
+            - listitem [ref=f6e172]:
+              - link "Acceptable Use Policy" [ref=f6e173] [cursor=pointer]:
+                - /url: https://policies.python.org/pypi.org/Acceptable-Use-Policy/
+    - separator [ref=f6e174]
+    - generic [ref=f6e175]:
+      - paragraph [ref=f6e176]:
+        - text: "Status:"
+        - link "All Systems Operational" [ref=f6e177] [cursor=pointer]:
+          - /url: https://status.python.org/
+      - paragraph [ref=f6e178]:
+        - text: Developed and maintained by the Python community, for the Python community.
+        - link "Donate today!" [ref=f6e179] [cursor=pointer]:
+          - /url: https://donate.pypi.org
+      - paragraph [ref=f6e180]:
+        - text: "\"PyPI\", \"Python Package Index\", and the blocks logos are registered"
+        - link "trademarks" [ref=f6e181] [cursor=pointer]:
+          - /url: /trademarks/
+        - text: of the
+        - link "Python Software Foundation" [ref=f6e182] [cursor=pointer]:
+          - /url: https://www.python.org/psf-landing
+        - text: .
+      - paragraph [ref=f6e183]:
+        - text: © 2026
+        - link "Python Software Foundation" [ref=f6e184] [cursor=pointer]:
+          - /url: https://www.python.org/psf-landing/
+        - link "Site map" [ref=f6e185] [cursor=pointer]:
+          - /url: /sitemap/
+      - paragraph [ref=f6e186]:
+        - text: Deployed from
+        - link "45fe4d0" [ref=f6e187] [cursor=pointer]:
+          - /url: https://github.com/pypi/warehouse/commit/45fe4d027b938b3dab3bc607bb5805bd8ac7f338
+          - code [ref=f6e188]: 45fe4d0
+          - text: 
+  - list [ref=f6e191]:
+    - listitem [ref=f6e192]:
+      - button "English"
+    - listitem [ref=f6e193]:
+      - button "español" [ref=f6e194]
+    - listitem [ref=f6e195]:
+      - button "français" [ref=f6e196]
+    - listitem [ref=f6e197]:
+      - button "日本語" [ref=f6e198]
+    - listitem [ref=f6e199]:
+      - button "português (Brasil)" [ref=f6e200]
+    - listitem [ref=f6e201]:
+      - button "українська" [ref=f6e202]
+    - listitem [ref=f6e203]:
+      - button "Ελληνικά" [ref=f6e204]
+    - listitem [ref=f6e205]:
+      - button "Deutsch" [ref=f6e206]
+    - listitem [ref=f6e207]:
+      - button "中文 (简体)" [ref=f6e208]
+    - listitem [ref=f6e209]:
+      - button "中文 (繁體)" [ref=f6e210]
+    - listitem [ref=f6e211]:
+      - button "русский" [ref=f6e212]
+    - listitem [ref=f6e213]:
+      - button "עברית" [ref=f6e214]
+    - listitem [ref=f6e215]:
+      - button "Esperanto" [ref=f6e216]
+    - listitem [ref=f6e217]:
+      - button "한국어" [ref=f6e218]
+  - generic [ref=f6e219]:
+    - link "AWS Cloud computing and Security Sponsor" [ref=f6e220] [cursor=pointer]:
+      - /url: https://aws.amazon.com/
+      - generic [ref=f6e221]: AWS
+      - generic [ref=f6e222]: Cloud computing and Security Sponsor
+    - link "Datadog Monitoring" [ref=f6e223] [cursor=pointer]:
+      - /url: https://www.datadoghq.com/
+      - generic [ref=f6e224]: Datadog
+      - generic [ref=f6e225]: Monitoring
+    - link "Depot Continuous Integration" [ref=f6e226] [cursor=pointer]:
+      - /url: https://depot.dev
+      - generic [ref=f6e227]: Depot
+      - generic [ref=f6e228]: Continuous Integration
+    - link "Fastly CDN" [ref=f6e229] [cursor=pointer]:
+      - /url: https://www.fastly.com/
+      - generic [ref=f6e230]: Fastly
+      - generic [ref=f6e231]: CDN
+    - link "Google Download Analytics" [ref=f6e232] [cursor=pointer]:
+      - /url: https://careers.google.com/
+      - generic [ref=f6e233]: Google
+      - generic [ref=f6e234]: Download Analytics
+    - link "Pingdom Monitoring" [ref=f6e235] [cursor=pointer]:
+      - /url: https://www.pingdom.com/
+      - generic [ref=f6e236]: Pingdom
+      - generic [ref=f6e237]: Monitoring
+    - link "Sentry Error logging" [ref=f6e238] [cursor=pointer]:
+      - /url: https://sentry.io/for/python/?utm_source=pypi&utm_medium=paid-community&utm_campaign=python-na-evergreen&utm_content=static-ad-pypi-sponsor-learnmore
+      - generic [ref=f6e239]: Sentry
+      - generic [ref=f6e240]: Error logging
+    - link "StatusPage Status page" [ref=f6e241] [cursor=pointer]:
+      - /url: https://statuspage.io
+      - generic [ref=f6e242]: StatusPage
+      - generic [ref=f6e243]: Status page
