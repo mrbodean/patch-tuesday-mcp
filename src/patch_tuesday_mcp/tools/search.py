@@ -17,6 +17,7 @@ from ..models.vulnerability import (
     compute_stats,
     sort_vulnerabilities,
 )
+from . import formatters
 
 _CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
 
@@ -29,6 +30,11 @@ CHAIN_MAX_DEPTH = 12
 CHAIN_SCAN_MONTHS = 24
 
 MAX_LIMIT = 100
+
+# Output formats for the monthly search view. "json" (default) is the most
+# complete; "markdown"/"csv" add an additive triage rendering of the page.
+OUTPUT_FORMATS = {"json", "markdown", "csv"}
+REPORT_KINDS = {None, "triage"}
 
 # Allowed single-letter values for the CVSS v3.x base-metric filters.
 CVSS_FILTER_VALUES = {
@@ -57,6 +63,8 @@ async def msrc_search(
     scope: str | None = None,
     include_chain: bool = False,
     include_guidance: bool = False,
+    format: str = "json",
+    report: str | None = None,
     limit: Annotated[int, Field(ge=0, le=MAX_LIMIT)] = 10,
     offset: Annotated[int, Field(ge=0)] = 0,
     include_stats: bool = False,
@@ -141,6 +149,15 @@ async def msrc_search(
             the CVE detail output with any Microsoft-provided mitigations,
             workarounds, and will-not-fix advisories (type/description/url).
             Omitted by default to keep responses lean. Ignored without cve=.
+        format: Output format for a monthly/filtered search: "json" (default,
+            most complete), "markdown", or "csv". "markdown" adds a prioritized
+            triage briefing (executive summary + table) under a markdown key;
+            "csv" adds a spreadsheet-ready table under a csv key plus a columns
+            list. The JSON vulnerabilities list is always included. Ignored for
+            cve=/kb= fast-path lookups.
+        report: Optional report profile for format="markdown"/"csv". Currently
+            only "triage" (the default rendering) is supported; reserved for
+            future report shapes.
         limit: Maximum number of results to return (default: 10, max: 100).
             Set to 0 with include_stats=True for a stats-only month overview.
         offset: Number of results to skip for pagination (default: 0).
@@ -162,6 +179,9 @@ async def msrc_search(
         - guidance: (only for cve= lookups with include_guidance=True) list of
           mitigation/workaround/will-not-fix advisories, when Microsoft
           provides them
+        - format / markdown / csv / columns: (only when format="markdown" or
+          "csv") the chosen format plus the rendered triage view; csv also
+          carries the stable column-name list
         - error / error_kind: (only on failure) a message plus a category
           (invalid_input, not_found, upstream)
         - note: (when relevant) explains month selection, e.g. that a newer
@@ -188,6 +208,8 @@ async def msrc_search(
         scope=scope,
         include_chain=include_chain,
         include_guidance=include_guidance,
+        format=format,
+        report=report,
         limit=limit,
         offset=offset,
         include_stats=include_stats,
@@ -220,6 +242,8 @@ async def _search_impl(
     scope: str | None,
     include_chain: bool,
     include_guidance: bool,
+    format: str,
+    report: str | None,
     limit: int,
     offset: int,
     include_stats: bool,
@@ -246,10 +270,24 @@ async def _search_impl(
         privileges_required=privileges_required,
         user_interaction=user_interaction,
         scope=scope,
+        format=format if format != "json" else None,
+        report=report,
         offset=offset,
     )
 
     # Validate inputs before any network call
+    fmt = (format or "json").lower()
+    if fmt not in OUTPUT_FORMATS:
+        return _error(
+            f"Invalid format: {format!r}. Valid values: {', '.join(sorted(OUTPUT_FORMATS))}.",
+            filters_applied,
+        )
+    if report not in REPORT_KINDS:
+        valid = ", ".join(sorted(r for r in REPORT_KINDS if r))
+        return _error(
+            f"Invalid report: {report!r}. Valid values: {valid}.",
+            filters_applied,
+        )
     if severity is not None:
         severity = severity.capitalize()
         if severity not in SEVERITY_ORDER:
@@ -331,6 +369,17 @@ async def _search_impl(
     }
     if include_stats:
         response["stats"] = compute_stats(matched)
+
+    if fmt != "json":
+        page = matched[offset : offset + limit]
+        response["format"] = fmt
+        if fmt == "markdown":
+            response["markdown"] = formatters.render_markdown(
+                page, _release_header(release), len(matched), all_vulns=matched
+            )
+        elif fmt == "csv":
+            response["csv"] = formatters.render_csv(page)
+            response["columns"] = list(formatters.TRIAGE_COLUMNS)
 
     if skipped_pre_release:
         release_time = msrc_api.patch_tuesday_utc(skipped_pre_release)

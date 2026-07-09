@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Briefing / report mode (Epic 5)** — `msrc_search` now accepts
+  `format="markdown"` or `format="csv"` (default `"json"`) on monthly/filtered
+  searches, plus an optional `report="triage"` profile. Markdown renders a
+  prioritized executive summary and triage table; CSV returns a spreadsheet-ready
+  export under a `csv` key with a stable `columns` list. Both render from the
+  same urgency ranking (KEV/exploited → EPSS → severity → CVSS) and are additive:
+  the JSON `vulnerabilities` list is always included and `format="json"` output
+  is unchanged. Rendering lives in a new `tools/formatters.py` module.
 - **Mitigations & workarounds (Epic 3)** — `msrc_search` now accepts
   `include_guidance=True` on CVE lookups, which adds a `guidance` list to the
   detail output containing any Microsoft-provided mitigations, workarounds, and
@@ -34,5 +42,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Notes
 
-- Both additions are fully backward compatible: the new parameters are optional
+- All additions are fully backward compatible: the new parameters are optional
   and existing calls, output fields, and result ordering are unchanged.

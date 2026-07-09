@@ -213,6 +213,7 @@ Depends on Epic 2 for exposure-aware trend filters. Prefer after Epic 3 so trend
 
 ### Epic 5 — Briefing / Report Mode
 
+**Status:** ✅ Delivered (Phase 2) — `format="markdown"|"csv"` (default `json`) + optional `report="triage"` on monthly/filtered `msrc_search`; additive Markdown briefing (exec summary + prioritized table) and CSV export with stable columns via new `tools/formatters.py`; JSON default unchanged.  
 **Priority:** P1  
 **Lane:** Upstream PR  
 **Effort:** M  

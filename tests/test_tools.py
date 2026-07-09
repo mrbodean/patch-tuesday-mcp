@@ -275,6 +275,70 @@ async def test_no_vector_filter_keeps_summary_lean():
     assert all("cvss" not in v for v in result["vulnerabilities"])
 
 
+# --- Report mode (format=markdown/csv) ---
+
+
+async def test_default_format_is_json_unchanged():
+    result = await msrc_search()
+    assert "markdown" not in result
+    assert "csv" not in result
+    assert "format" not in result
+    assert "vulnerabilities" in result
+
+
+async def test_markdown_report_has_summary_and_table():
+    result = await msrc_search(format="markdown")
+    assert result["format"] == "markdown"
+    md = result["markdown"]
+    # Executive summary heading and a prioritized table
+    assert md.startswith("# Patch Tuesday Triage")
+    assert "vulnerabilities matched" in md
+    assert "| CVE | Title |" in md
+    # JSON list still present alongside the rendering
+    assert result["vulnerabilities"]
+    # One table row per shown vulnerability (plus heading + separator)
+    row_count = sum(1 for line in md.splitlines() if line.startswith("| [CVE-"))
+    assert row_count == len(result["vulnerabilities"])
+
+
+async def test_markdown_respects_limit_but_reports_full_total():
+    result = await msrc_search(format="markdown", limit=2)
+    assert result["total_found"] == 6
+    assert len(result["vulnerabilities"]) == 2
+    rows = sum(1 for line in result["markdown"].splitlines() if line.startswith("| [CVE-"))
+    assert rows == 2
+    # Summary counts reflect the full matched set, not just the page
+    assert "**6** vulnerabilities matched" in result["markdown"]
+
+
+async def test_csv_report_is_parseable_with_stable_columns():
+    import csv
+    import io
+
+    from patch_tuesday_mcp.tools.formatters import TRIAGE_COLUMNS
+
+    result = await msrc_search(format="csv")
+    assert result["format"] == "csv"
+    assert result["columns"] == TRIAGE_COLUMNS
+    rows = list(csv.DictReader(io.StringIO(result["csv"])))
+    assert len(rows) == len(result["vulnerabilities"])
+    assert list(rows[0].keys()) == TRIAGE_COLUMNS
+    assert rows[0]["cve"].startswith("CVE-")
+    assert rows[0]["rationale"]
+
+
+async def test_invalid_format_rejected():
+    result = await msrc_search(format="xml")
+    assert "Invalid format" in result["error"]
+    assert result["error_kind"] == "invalid_input"
+
+
+async def test_invalid_report_rejected():
+    result = await msrc_search(format="markdown", report="bogus")
+    assert "Invalid report" in result["error"]
+    assert result["error_kind"] == "invalid_input"
+
+
 async def test_month_normalization_and_invalid():
     result = await msrc_search(month="2026-06")
     assert result["month"] == "2026-Jun"

@@ -26,6 +26,18 @@ CVSS vector breakdown and generated reference links shipped on branch
 to parse a vector (MSRC always provides one) so v2/v4/ambiguous inputs fail open
 to `None`; malformed individual metrics are dropped, never raised. CVSS exposure
 and references are opt-in for summaries to keep broad results lean.
+### 2026-07-09 — Epic 5 (Briefing / Report Mode) delivered
+Added `format="markdown"|"csv"` (default `json`) + optional `report="triage"` to
+`msrc_search` monthly/filtered searches. Rendering lives in a new
+`tools/formatters.py` (chose a single formatter module over a `reports/` package
+for simplicity). Output is additive — the JSON `vulnerabilities` list is always
+present and `format="json"` is byte-for-byte unchanged. Markdown = exec summary
+(counts over the full matched set) + prioritized table of the page; CSV =
+`csv` string + stable `columns` list. Both mirror the urgency sort
+(KEV/exploited → EPSS → severity → CVSS) and share `prioritization_rationale`.
+Table respects `limit` while `total_found` reflects the full count. Verified
+live (7 smoke tests). Branch `feat/epic-5-report-mode`.
+
 ### 2026-07-09 — Phase 2 started: Epic 3 (Mitigations & Workarounds)
 Added `GuidanceEntry` model and `include_guidance` flag on `msrc_search` CVE
 detail. Non-vendor-fix CVRF remediations (workaround=0, mitigation=1,
