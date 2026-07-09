@@ -26,6 +26,14 @@ CVSS vector breakdown and generated reference links shipped on branch
 to parse a vector (MSRC always provides one) so v2/v4/ambiguous inputs fail open
 to `None`; malformed individual metrics are dropped, never raised. CVSS exposure
 and references are opt-in for summaries to keep broad results lean.
+### 2026-07-09 — Phase 2 started: Epic 3 (Mitigations & Workarounds)
+Added `GuidanceEntry` model and `include_guidance` flag on `msrc_search` CVE
+detail. Non-vendor-fix CVRF remediations (workaround=0, mitigation=1,
+will_not_fix=4) are parsed, HTML-stripped, de-duplicated; vendor-fix (type 2)
+KBs remain in `kb_articles`. Guidance is opt-in and skipped on slim parses to
+keep summaries and supersedence walking lean. Verified live against June 2026
+(HTTP.sys, DHCP Client mitigations). Branch `feat/phase-2-guidance`.
+
 ### 2026-07-09 — Phase 1 shipped (Epic 2 + Epic 7) and documented
 CVSS vector breakdown (parsed `cvss` object + `attack_vector`/`privileges_required`/
 `user_interaction`/`scope` filters) and generated reference links (MSRC/NVD/EPSS/KEV)

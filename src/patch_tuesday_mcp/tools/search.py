@@ -56,6 +56,7 @@ async def msrc_search(
     user_interaction: str | None = None,
     scope: str | None = None,
     include_chain: bool = False,
+    include_guidance: bool = False,
     limit: Annotated[int, Field(ge=0, le=MAX_LIMIT)] = 10,
     offset: Annotated[int, Field(ge=0)] = 0,
     include_stats: bool = False,
@@ -136,6 +137,10 @@ async def msrc_search(
         include_chain: When True together with kb=, adds a supersedence_chain
             showing which KBs this KB replaces (newest to oldest), walked from
             Microsoft-stated supersedence links. Ignored without kb=.
+        include_guidance: When True together with cve=, adds a guidance list to
+            the CVE detail output with any Microsoft-provided mitigations,
+            workarounds, and will-not-fix advisories (type/description/url).
+            Omitted by default to keep responses lean. Ignored without cve=.
         limit: Maximum number of results to return (default: 10, max: 100).
             Set to 0 with include_stats=True for a stats-only month overview.
         offset: Number of results to skip for pagination (default: 0).
@@ -154,6 +159,9 @@ async def msrc_search(
         - stats: (only when include_stats=True) aggregate counts
         - supersedence_chain / chain_complete: (only for kb= lookups with
           include_chain=True) the walked chain, newest to oldest
+        - guidance: (only for cve= lookups with include_guidance=True) list of
+          mitigation/workaround/will-not-fix advisories, when Microsoft
+          provides them
         - error / error_kind: (only on failure) a message plus a category
           (invalid_input, not_found, upstream)
         - note: (when relevant) explains month selection, e.g. that a newer
@@ -179,6 +187,7 @@ async def msrc_search(
         user_interaction=user_interaction,
         scope=scope,
         include_chain=include_chain,
+        include_guidance=include_guidance,
         limit=limit,
         offset=offset,
         include_stats=include_stats,
@@ -210,13 +219,14 @@ async def _search_impl(
     user_interaction: str | None,
     scope: str | None,
     include_chain: bool,
+    include_guidance: bool,
     limit: int,
     offset: int,
     include_stats: bool,
 ) -> dict:
     # --- CVE fast path: cross-month single-CVE detail lookup ---
     if cve:
-        return await _lookup_cve(cve)
+        return await _lookup_cve(cve, include_guidance)
 
     # --- KB fast path: which CVEs does this KB fix ---
     if kb:
@@ -359,9 +369,11 @@ async def _enrich(vulnerabilities: list[Vulnerability]) -> None:
             v.epss_score, v.epss_percentile = scores
 
 
-async def _lookup_cve(cve: str) -> dict:
+async def _lookup_cve(cve: str, include_guidance: bool = False) -> dict:
     cve = cve.strip().upper()
-    filters_applied = {"cve": cve}
+    filters_applied: dict = {"cve": cve}
+    if include_guidance:
+        filters_applied["include_guidance"] = True
     if not _CVE_RE.match(cve):
         return _error(
             f"Invalid CVE format: {cve!r}. Expected e.g. 'CVE-2026-41108'.",
@@ -393,7 +405,7 @@ async def _lookup_cve(cve: str) -> dict:
     return {
         **_release_header(release),
         "total_found": 1,
-        "vulnerabilities": [vuln.to_detail_dict()],
+        "vulnerabilities": [vuln.to_detail_dict(include_guidance=include_guidance)],
         "filters_applied": filters_applied,
     }
 

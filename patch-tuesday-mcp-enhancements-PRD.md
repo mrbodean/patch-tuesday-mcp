@@ -158,6 +158,7 @@ This is the cleanest first upstream PR. It is self-contained, leverages existing
 **Priority:** P0  
 **Lane:** Upstream PR  
 **Effort:** M  
+**Status:** ✅ Delivered (Phase 2) — `GuidanceEntry` model + `include_guidance` flag on `msrc_search` CVE detail (mitigation/workaround/will-not-fix), slim parse skips guidance.  
 **Primary touchpoints:** `models/vulnerability.py` constants for CVRF remediation types, `models/vulnerability.py::_parse_vulnerability`, `models/vulnerability.py::Vulnerability`, `models/vulnerability.py::to_detail_dict`, `tools/search.py::msrc_search`.
 
 #### Functional Requirements

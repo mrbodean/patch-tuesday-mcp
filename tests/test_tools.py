@@ -662,3 +662,68 @@ async def test_kb_lookup_respects_limit_and_offset(monkeypatch):
     cves1 = {v["cve"] for v in page1["vulnerabilities"]}
     cves2 = {v["cve"] for v in page2["vulnerabilities"]}
     assert cves1.isdisjoint(cves2)
+
+
+# --- Mitigations & workarounds (include_guidance) ---
+
+
+def _guidance_month_doc() -> dict:
+    """A minimal CVRF month with one CVE carrying mitigation/workaround text."""
+    return {
+        "DocumentTracking": {
+            "Identification": {"ID": {"Value": "2026-Jun"}},
+            "InitialReleaseDate": "2026-06-09T07:00:00Z",
+            "CurrentReleaseDate": "2026-06-09T07:00:00Z",
+        },
+        "DocumentTitle": {"Value": "2026-Jun Security Updates"},
+        "ProductTree": {"FullProductName": [], "Branch": []},
+        "Vulnerability": [
+            {
+                "CVE": "CVE-2026-70000",
+                "Title": {"Value": "Guidance example"},
+                "Threats": [{"Type": 3, "Description": {"Value": "Important"}}],
+                "Remediations": [
+                    {"Type": 2, "Description": {"Value": "5099999"}, "SubType": "Security Update"},
+                    {
+                        "Type": 1,
+                        "Description": {"Value": "<p>Disable the <b>Foo</b> service.</p>"},
+                        "URL": "https://msrc.microsoft.com/mitigation",
+                    },
+                    {"Type": 0, "Description": {"Value": "Block inbound port 445."}},
+                ],
+            }
+        ],
+    }
+
+
+@pytest.fixture
+def mock_guidance_cve(monkeypatch):
+    clear_cache()
+    doc = _guidance_month_doc()
+
+    async def fake_get_json(url, timeout=60.0):
+        if "/updates('CVE-2026-70000')" in url:
+            return {"value": [{"ID": "2026-Jun"}]}
+        if url.endswith("/cvrf/2026-Jun"):
+            return doc
+        raise MsrcApiError(f"unexpected URL in test: {url}")
+
+    monkeypatch.setattr(msrc_api, "_get_json", fake_get_json)
+    yield
+    clear_cache()
+
+
+async def test_cve_detail_includes_guidance_when_requested(mock_guidance_cve):
+    detail = (await msrc_search(cve="CVE-2026-70000", include_guidance=True))[
+        "vulnerabilities"
+    ][0]
+    assert [g["type"] for g in detail["guidance"]] == ["mitigation", "workaround"]
+    assert detail["guidance"][0]["description"] == "Disable the Foo service."
+    assert detail["guidance"][0]["url"] == "https://msrc.microsoft.com/mitigation"
+    # Vendor-fix KB is unaffected and still present.
+    assert detail["kb_articles"][0]["kb"] == "5099999"
+
+
+async def test_cve_detail_omits_guidance_by_default(mock_guidance_cve):
+    detail = (await msrc_search(cve="CVE-2026-70000"))["vulnerabilities"][0]
+    assert "guidance" not in detail
