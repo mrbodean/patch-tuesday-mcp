@@ -115,3 +115,22 @@ async def test_live_markdown_and_csv_report_shape():
         assert row["cve"].upper().startswith("CVE-")
         assert list(row.keys()) == TRIAGE_COLUMNS
 
+
+async def test_live_force_refresh_and_freshness_metadata():
+    # force_refresh must succeed and surface freshness for MSRC + enrichment.
+    result = await msrc_search(force_refresh=True, limit=5)
+    assert "error" not in result, result.get("error")
+    fresh = result["freshness"]
+    assert fresh["force_refresh"] is True
+    assert fresh["msrc"]["month"] == result["month"]
+    assert fresh["msrc"]["available"] is True
+    assert fresh["msrc"]["age_seconds"] >= 0
+    # Enrichment is best-effort; when present it carries a TTL.
+    assert "ttl_seconds" in fresh["epss"]
+    assert "ttl_seconds" in fresh["kev"]
+
+    # Freshness is opt-in and omitted by default.
+    default = await msrc_search(limit=5)
+    assert "freshness" not in default
+
+

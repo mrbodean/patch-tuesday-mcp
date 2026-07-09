@@ -306,6 +306,7 @@ Can ship with Epic 2 because both are additive model output changes.
 
 ### Epic 8 — Cache Controls and Enrichment Freshness
 
+**Status:** ✅ Delivered (Phase 2) — `force_refresh` bypasses the in-process MSRC/EPSS/KEV caches per request; `include_freshness` (implied by `force_refresh`) adds a `freshness` block with cache age/TTL for the MSRC document and enrichment via `msrc_api.month_freshness` / `enrichment.kev_freshness` / `enrichment.epss_freshness`.  
 **Priority:** P1  
 **Lane:** Upstream PR  
 **Effort:** S/M  

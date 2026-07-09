@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Cache controls & enrichment freshness (Epic 8)** — `msrc_search` now accepts
+  `force_refresh=True` to bypass the in-process caches for a request and re-fetch
+  the MSRC document, EPSS scores, and CISA KEV catalog from source (only the data
+  needed for the request is refreshed; unrelated cached months are left intact).
+  A new `include_freshness=True` flag (implied by `force_refresh`) adds a
+  `freshness` block reporting the cache age and TTL of the MSRC document and the
+  EPSS/KEV enrichment. Freshness helpers were added to the feeds layer
+  (`msrc_api.month_freshness`, `enrichment.kev_freshness`,
+  `enrichment.epss_freshness`).
 - **Briefing / report mode (Epic 5)** — `msrc_search` now accepts
   `format="markdown"` or `format="csv"` (default `"json"`) on monthly/filtered
   searches, plus an optional `report="triage"` profile. Markdown renders a

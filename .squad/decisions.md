@@ -26,6 +26,17 @@ CVSS vector breakdown and generated reference links shipped on branch
 to parse a vector (MSRC always provides one) so v2/v4/ambiguous inputs fail open
 to `None`; malformed individual metrics are dropped, never raised. CVSS exposure
 and references are opt-in for summaries to keep broad results lean.
+### 2026-07-09 — Epic 8 (Cache Controls + Enrichment Freshness) delivered
+Added `force_refresh` (bypass in-process MSRC/EPSS/KEV caches for the request,
+re-fetch from source; unrelated cached months untouched) and `include_freshness`
+(implied by `force_refresh`) which adds a `freshness` block: `msrc` (month cache
+age + TTL), `epss` (oldest age across requested CVEs, TTL, covered/requested),
+`kev` (catalog age + TTL). Age is derived from the stored monotonic fetch time
+(no wall clock needed). Freshness is opt-in so default response shape is
+unchanged. Threaded `force_refresh` through the monthly search plus the cve/kb
+fast paths and `_enrich`. Verified live (force_refresh + freshness, 8 smoke
+tests). Branch `feat/epic-8-cache-controls`.
+
 ### 2026-07-09 — Epic 5 (Briefing / Report Mode) delivered
 Added `format="markdown"|"csv"` (default `json`) + optional `report="triage"` to
 `msrc_search` monthly/filtered searches. Rendering lives in a new
