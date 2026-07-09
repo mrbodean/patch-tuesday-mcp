@@ -2,6 +2,25 @@
 
 ## Active Decisions
 
+### 2026-07-09 — Epic 1 (Product Profile / Watchlist) delivered
+Implemented the design decided earlier. New local module `tools/profiles.py`
+holds built-in profiles (`identity-core`, `endpoint`, `server-infrastructure`)
+and a loader that merges a `MSRC_PROFILES_PATH` JSON override over them, with
+strict validation (missing file / bad JSON / wrong shape / empty entry →
+`ProfileError`). `msrc_search` gains `product_profile` + `products` +
+`product_families`, threaded through `_search_impl` → `_filter_vulnerabilities`
+(new `product_terms`/`family_terms` union block: keep a vuln if it matches ANY
+product term OR ANY family term) and through `_trend_search`. Profile resolution
+happens before the trend dispatch so it applies to both single-month and trend
+paths. Privacy: only the profile NAME (and generic param keys) reach
+`filters_applied`; telemetry logs only parameter keys, so expanded contents /
+custom watchlists never leave the host. Unknown/invalid profile returns
+`invalid_input` (empty `vulnerabilities`, no broad fallback — AC4). Generic
+list filters are the upstream-friendly hook; named profiles + the companion
+`.copilot/skills/patch-tuesday-triage/SKILL.md` (watchlists + triage workflow,
+no new tool) stay local. 173 offline tests pass + 1 live smoke. Branch
+`feat/epic-1-product-profiles`.
+
 ### 2026-07-09 — Epic 9 (HTTP Self-Host Hardening) delivered
 Hardened the HTTP transport without touching stdio. CORS is now an allowlist via
 `MCP_CORS_ORIGINS` (comma-separated; default `*` preserved for local-dev

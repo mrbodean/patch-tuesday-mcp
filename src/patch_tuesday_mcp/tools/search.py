@@ -17,7 +17,7 @@ from ..models.vulnerability import (
     compute_stats,
     sort_vulnerabilities,
 )
-from . import formatters
+from . import formatters, profiles
 
 _CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
 
@@ -54,6 +54,9 @@ async def msrc_search(
     kb: str | None = None,
     month: str | None = None,
     product: str | None = None,
+    product_profile: str | None = None,
+    products: list[str] | None = None,
+    product_families: list[str] | None = None,
     severity: str | None = None,
     exploited: bool | None = None,
     publicly_disclosed: bool | None = None,
@@ -106,6 +109,10 @@ async def msrc_search(
     - High exploitation probability (min_epss=0.5) -- EPSS >= 50%
     - Search by keyword (query="Exchange" or query="DNS spoofing")
     - Filter to a product (product="Windows Server 2022") -- partial match
+    - Filter to a product watchlist (product_profile="identity-core", or
+      products=["Exchange Server", "Windows Server"] /
+      product_families=["Windows", "Azure"]) -- keeps vulns matching any listed
+      product or family; matching is local and profiles never leave the host
     - Filter by severity (severity="Critical") -- Critical/Important/Moderate/Low
     - Find actively exploited vulnerabilities (exploited=True)
     - Find publicly disclosed zero-days (publicly_disclosed=True)
@@ -134,6 +141,18 @@ async def msrc_search(
             Combined with kb=, restricts the KB lookup to that month.
         product: Optional product name filter (case-insensitive partial match
             against affected product names, e.g. "Windows Server 2022").
+        product_profile: Optional named watchlist (e.g. "identity-core") that
+            expands locally into product/family matchers. Built-in profiles can
+            be overridden/extended via a JSON file at MSRC_PROFILES_PATH. An
+            unknown name returns an invalid_input error listing the available
+            profiles. Profile contents are matched locally and never sent to
+            MSRC, FIRST.org, CISA, or telemetry.
+        products: Optional list of product-name partial matchers. A vulnerability
+            is kept if any entry matches one of its affected products.
+        product_families: Optional list of product-family partial matchers. A
+            vulnerability is kept if any entry matches one of its product
+            families. Combined with products/product_profile as a union (match
+            any listed product OR family).
         severity: Optional maximum-severity filter. Valid values: Critical,
             Important, Moderate, Low.
         exploited: Optional filter for vulnerabilities known to be exploited
@@ -230,6 +249,9 @@ async def msrc_search(
         kb=kb,
         month=month,
         product=product,
+        product_profile=product_profile,
+        products=products,
+        product_families=product_families,
         severity=severity,
         exploited=exploited,
         publicly_disclosed=publicly_disclosed,
@@ -269,6 +291,9 @@ async def _search_impl(
     kb: str | None,
     month: str | None,
     product: str | None,
+    product_profile: str | None,
+    products: list[str] | None,
+    product_families: list[str] | None,
     severity: str | None,
     exploited: bool | None,
     publicly_disclosed: bool | None,
@@ -304,6 +329,9 @@ async def _search_impl(
         query=query,
         month=month,
         product=product,
+        product_profile=product_profile,
+        products=products,
+        product_families=product_families,
         severity=severity,
         exploited=exploited,
         publicly_disclosed=publicly_disclosed,
@@ -362,6 +390,19 @@ async def _search_impl(
             )
         vector_filters[name] = normalized
 
+    # Resolve a named product profile (watchlist) into product/family matcher
+    # lists, merged with any explicit products/product_families. Matching stays
+    # local; profile contents are never sent to MSRC or telemetry.
+    product_terms = list(products or [])
+    family_terms = list(product_families or [])
+    if product_profile:
+        try:
+            prof_products, prof_families = profiles.resolve_profile(product_profile)
+        except profiles.ProfileError as exc:
+            return _error(str(exc), filters_applied)
+        product_terms += prof_products
+        family_terms += prof_families
+
     limit = max(0, min(limit, MAX_LIMIT))
     offset = max(0, offset)
 
@@ -371,6 +412,8 @@ async def _search_impl(
             filters_applied=filters_applied,
             query=query,
             product=product,
+            product_terms=product_terms,
+            family_terms=family_terms,
             severity=severity,
             exploited=exploited,
             publicly_disclosed=publicly_disclosed,
@@ -426,6 +469,8 @@ async def _search_impl(
         min_epss=min_epss,
         min_cvss=min_cvss,
         vector_filters=vector_filters,
+        product_terms=product_terms,
+        family_terms=family_terms,
     )
     matched = sort_vulnerabilities(matched)
 
@@ -504,6 +549,8 @@ async def _trend_search(
     filters_applied: dict,
     query: str | None,
     product: str | None,
+    product_terms: list[str],
+    family_terms: list[str],
     severity: str | None,
     exploited: bool | None,
     publicly_disclosed: bool | None,
@@ -626,6 +673,8 @@ async def _trend_search(
             min_epss=min_epss,
             min_cvss=min_cvss,
             vector_filters=vector_filters,
+            product_terms=product_terms,
+            family_terms=family_terms,
         )
         combined.extend(month_matched)
         trend.append(_trend_entry(release, month_matched))
@@ -914,10 +963,15 @@ def _filter_vulnerabilities(
     min_epss: float | None,
     min_cvss: float | None,
     vector_filters: dict[str, str] | None = None,
+    product_terms: list[str] | None = None,
+    family_terms: list[str] | None = None,
 ) -> list[Vulnerability]:
     query_lower = query.lower() if query else None
     product_lower = product.lower() if product else None
     vector_filters = vector_filters or {}
+    product_terms_lower = [t.lower() for t in product_terms or [] if t.strip()]
+    family_terms_lower = [t.lower() for t in family_terms or [] if t.strip()]
+    watchlist = bool(product_terms_lower or family_terms_lower)
 
     matched = []
     for v in vulnerabilities:
@@ -929,6 +983,18 @@ def _filter_vulnerabilities(
                 continue
         if product_lower:
             if not any(product_lower in p.lower() for p in v.affected_products):
+                continue
+        if watchlist:
+            # Union match: keep the vuln if any listed product term matches an
+            # affected product OR any listed family term matches a product
+            # family. This implements profile/watchlist membership.
+            prod_hit = any(
+                term in p.lower() for term in product_terms_lower for p in v.affected_products
+            )
+            fam_hit = any(
+                term in fam.lower() for term in family_terms_lower for fam in v.product_families
+            )
+            if not (prod_hit or fam_hit):
                 continue
         if severity and v.severity != severity:
             continue
