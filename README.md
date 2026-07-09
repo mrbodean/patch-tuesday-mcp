@@ -341,7 +341,8 @@ The container runs on any host that can serve HTTP — Azure Container Apps, Clo
 
 ```bash
 pip install -e ".[dev]"
-pytest
+pytest                  # offline suite (mocked feeds)
+pytest --run-live       # also run live smoke tests against the real MSRC / EPSS / KEV APIs
 ruff check src/ tests/
 ```
 
