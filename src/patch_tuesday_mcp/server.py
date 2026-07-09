@@ -9,6 +9,7 @@ from fastmcp import FastMCP
 logging.getLogger("fastmcp").setLevel(logging.WARNING)
 
 from . import __version__, telemetry  # noqa: E402
+from .feeds import http_client  # noqa: E402
 from .middleware.body_limit import DEFAULT_MAX_BODY_BYTES, BodyLimitMiddleware  # noqa: E402
 from .middleware.rate_limit import RateLimitMiddleware  # noqa: E402
 from .tools.search import msrc_search  # noqa: E402
@@ -20,6 +21,49 @@ def _env_flag(name: str, default: bool) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _uvicorn_limits() -> dict:
+    """Connection limits for uvicorn (MCP_LIMIT_CONCURRENCY, MCP_TIMEOUT_KEEP_ALIVE).
+
+    limit_concurrency caps concurrent in-flight connections (uvicorn returns
+    503 beyond it) so a small container can't be pinned down by connection
+    floods; 0 disables the cap. timeout_keep_alive closes idle keep-alive
+    connections.
+    """
+    concurrency = int(os.getenv("MCP_LIMIT_CONCURRENCY", "40"))
+    return {
+        "limit_concurrency": concurrency if concurrency > 0 else None,
+        "timeout_keep_alive": int(os.getenv("MCP_TIMEOUT_KEEP_ALIVE", "15")),
+    }
+
+
+def _log_level() -> int:
+    """Resolve MCP_LOG_LEVEL (default WARNING; invalid values fall back)."""
+    raw = os.getenv("MCP_LOG_LEVEL", "").strip().upper()
+    if raw in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+        return getattr(logging, raw)
+    return logging.WARNING
+
+
+class _ClientCleanup:
+    """ASGI wrapper that closes the shared httpx client on lifespan shutdown."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "lifespan":
+            await self.app(scope, receive, send)
+            return
+
+        async def wrapped_receive():
+            message = await receive()
+            if message["type"] == "lifespan.shutdown":
+                await http_client.aclose()
+            return message
+
+        await self.app(scope, wrapped_receive, send)
 
 
 def _cors_origins() -> list[str]:
@@ -51,14 +95,19 @@ mcp = FastMCP(
         "fixes with kb='5094123', or filter the latest month by product, "
         "severity, exploited=True, or min_cvss. Results are enriched with "
         "EPSS exploitation probabilities and CISA KEV catalog status: filter "
-        "with kev=True (confirmed exploited, federal due dates) or "
-        "min_epss=0.5 (EPSS >= 50%). Add include_chain=True to a kb= lookup "
-        "to walk Microsoft-stated supersedence links (which KBs it replaces). "
-        "Set include_stats=True with limit=0 for a month overview (counts by "
-        "severity, impact, product family, exploited, KEV). When no month is "
-        "given, results default to the most recent release whose Patch "
-        "Tuesday has occurred; the upcoming month's pre-release document "
-        "(early/out-of-band entries only) is available via month=."
+        "with kev=True (confirmed exploited, federal due dates), "
+        "ransomware=True (known ransomware campaign use), min_epss=0.5 "
+        "(EPSS >= 50%), or exploitation_likely=True (Microsoft's own "
+        "'Exploitation More Likely' assessment). Filter by weakness class "
+        "with cwe='CWE-416'. Add include_chain=True to a kb= lookup to walk "
+        "Microsoft-stated supersedence links (which KBs it replaces), and "
+        "include_kb_details=True for per-KB fixed builds and restart "
+        "requirements. Set include_stats=True with limit=0 for a month "
+        "overview (counts by severity, impact, product family, exploited, "
+        "KEV). Use list_months=True to discover available monthly releases. "
+        "When no month is given, results default to the most recent release "
+        "whose Patch Tuesday has occurred; the upcoming month's pre-release "
+        "document (early/out-of-band entries only) is available via month=."
     ),
 )
 
@@ -102,6 +151,9 @@ def main():
     """
     transport = os.getenv("MCP_TRANSPORT", "stdio")
 
+    # Root logging goes to stderr (never stdout, which stdio MCP owns)
+    logging.basicConfig(level=_log_level())
+
     if transport == "http":
         import uvicorn
         from starlette.middleware.cors import CORSMiddleware
@@ -118,12 +170,17 @@ def main():
 
         # Stateless: every request is self-contained, so replicas behind
         # ingress without session affinity can serve any request
-        app = mcp.http_app(stateless_http=True)
-        app = BodyLimitMiddleware(app, max_bytes=max_body)
+        app = _ClientCleanup(mcp.http_app(stateless_http=True))
+        app = BodyLimitMiddleware(
+            app,
+            max_bytes=max_body,
+            on_rejected=telemetry.track_rejected_body if telemetry_enabled else None,
+        )
         app = RateLimitMiddleware(
             app,
             requests_per_minute=rpm,
             on_request=telemetry.track_request if telemetry_enabled else None,
+            on_throttled=telemetry.track_throttled if telemetry_enabled else None,
             trust_x_forwarded_for=trust_xff,
             trusted_proxies=trusted_proxies,
         )
@@ -150,13 +207,14 @@ def main():
             proxy_display = (
                 f"via proxies {', '.join(sorted(trusted_proxies))}"
                 if trusted_proxies
-                else "rightmost hop"
+                else "rightmost hop (private/loopback peers only; set "
+                "MCP_TRUSTED_PROXIES to pin your ingress)"
             )
             print(f"Trusting X-Forwarded-For: {proxy_display}")
         else:
             print("Trusting X-Forwarded-For: no (direct peer IP only)")
         print(f"Telemetry: {'enabled' if telemetry_enabled else 'disabled'}")
-        uvicorn.run(app, host=host, port=port, log_level="warning")
+        uvicorn.run(app, host=host, port=port, log_level="warning", **_uvicorn_limits())
     else:
         # stdio transport (default for MCP client auto-start)
         mcp.run(transport="stdio", show_banner=False)

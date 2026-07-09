@@ -101,6 +101,7 @@ async def test_kev_caching_and_parse(mock_api):
         "date_added": "2026-06-15",
         "due_date": "2026-07-06",
         "ransomware_use": "Known",
+        "vendor_project": "Microsoft",
     }
     assert set(catalog) == {"CVE-2026-99999", "CVE-2026-12345"}
 
@@ -181,4 +182,51 @@ async def test_epss_freshness_metadata(mock_api):
 
     empty = enrichment.epss_freshness(["CVE-2026-00000"])
     assert empty["available"] is False
+
+
+# --- Cache bounds, fetch concurrency, telemetry ---
+
+
+async def test_epss_cache_is_bounded(mock_api, monkeypatch):
+    monkeypatch.setattr(enrichment, "MAX_EPSS_CACHE_ENTRIES", 3)
+    await fetch_epss([f"CVE-2026-{20000 + i}" for i in range(5)])
+    assert len(enrichment._epss_cache) <= 3, "EPSS cache must not grow unboundedly"
+
+
+async def test_epss_batches_fetch_concurrently(monkeypatch):
+    import asyncio
+
+    active = 0
+    peak = 0
+
+    async def fake_get_json(url, timeout=30.0):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        cves = url.split("cve=")[1].split(",")
+        return {
+            "status": "OK",
+            "data": [{"cve": c, "epss": "0.1", "percentile": "0.2"} for c in cves],
+        }
+
+    monkeypatch.setattr(enrichment, "_get_json", fake_get_json)
+    monkeypatch.setattr(enrichment, "EPSS_BATCH_SIZE", 1)
+    result = await fetch_epss([f"CVE-2026-{30000 + i}" for i in range(6)])
+    assert len(result) == 6
+    assert peak >= 2, "batches must be fetched concurrently"
+    assert peak <= 3, "batch concurrency must stay bounded"
+
+
+async def test_enrichment_fetch_emits_telemetry(mock_api, monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        enrichment.telemetry, "track_event", lambda name, props: events.append((name, props))
+    )
+    await fetch_kev()
+    await fetch_epss(["CVE-2026-10000"])
+    sources = [p["source"] for n, p in events if n == "enrichment_fetch"]
+    assert "kev" in sources
+    assert "epss" in sources
 

@@ -1,4 +1,8 @@
-"""Tests for the rate-limit/body-limit middleware and telemetry no-op behavior."""
+"""Tests for the rate-limit/body-limit middleware and telemetry behavior."""
+
+import datetime
+import json
+import logging
 
 from patch_tuesday_mcp import telemetry
 from patch_tuesday_mcp.middleware import rate_limit
@@ -23,8 +27,8 @@ def _http_scope(ip="1.2.3.4", forwarded=None, path="/mcp"):
     return {"type": "http", "headers": headers, "client": (ip, 12345), "path": path}
 
 
-async def _call(middleware, scope, body_chunks=(b"",)):
-    """Run one request through the middleware, returning the response status."""
+async def _call_full(middleware, scope, body_chunks=(b"",)):
+    """Run one request through the middleware, returning all sent ASGI messages."""
     sent = []
     chunks = list(body_chunks)
 
@@ -36,6 +40,12 @@ async def _call(middleware, scope, body_chunks=(b"",)):
         return {"type": "http.request", "body": chunk, "more_body": bool(chunks)}
 
     await middleware(scope, receive, send)
+    return sent
+
+
+async def _call(middleware, scope, body_chunks=(b"",)):
+    """Run one request through the middleware, returning the response status."""
+    sent = await _call_full(middleware, scope, body_chunks)
     return next(m["status"] for m in sent if m["type"] == "http.response.start")
 
 
@@ -79,6 +89,30 @@ async def test_spoofed_forwarded_for_cannot_evade_limit():
         scope = _http_scope(ip="10.0.0.1", forwarded=f"1.2.3.{i}, 198.51.100.1")
         assert await _call(mw, scope) == 200
     scope = _http_scope(ip="10.0.0.1", forwarded="1.2.3.99, 198.51.100.1")
+    assert await _call(mw, scope) == 429
+
+
+async def test_public_peer_xff_ignored_without_proxy_allowlist():
+    """A publicly-routable direct peer fully controls the XFF header, so
+    without a proxy allowlist it must be ignored — otherwise rotating forged
+    values would mint a fresh bucket per request (rate-limit bypass)."""
+    mw = RateLimitMiddleware(_ok_app, requests_per_minute=2)
+    # NB: a genuinely global peer IP — documentation ranges (203.0.113.0/24)
+    # count as private/non-global to ipaddress and would be trusted.
+    for i in range(2):
+        assert await _call(mw, _http_scope(ip="93.184.216.34", forwarded=f"1.2.3.{i}")) == 200
+    assert await _call(mw, _http_scope(ip="93.184.216.34", forwarded="1.2.3.99")) == 429
+
+
+async def test_unknown_peer_xff_ignored():
+    """A request with no client info in the scope must never honor XFF."""
+    mw = RateLimitMiddleware(_ok_app, requests_per_minute=2)
+    for i in range(2):
+        scope = _http_scope(forwarded=f"1.2.3.{i}")
+        scope["client"] = None
+        assert await _call(mw, scope) == 200
+    scope = _http_scope(forwarded="1.2.3.99")
+    scope["client"] = None
     assert await _call(mw, scope) == 429
 
 
@@ -142,6 +176,30 @@ async def test_health_path_is_exempt():
         assert await _call(mw, _http_scope(path="/health")) == 200
 
 
+async def test_rate_limit_tokens_refill_over_time(monkeypatch):
+    """A throttled client recovers as the bucket refills continuously."""
+    now = [1000.0]
+    monkeypatch.setattr(rate_limit.time, "monotonic", lambda: now[0])
+    mw = RateLimitMiddleware(_ok_app, requests_per_minute=2)
+    assert await _call(mw, _http_scope()) == 200
+    assert await _call(mw, _http_scope()) == 200
+    assert await _call(mw, _http_scope()) == 429
+    now[0] += 30.0  # 2 rpm refills one token per 30s
+    assert await _call(mw, _http_scope()) == 200
+    assert await _call(mw, _http_scope()) == 429
+
+
+async def test_429_response_body_and_retry_after():
+    mw = RateLimitMiddleware(_ok_app, requests_per_minute=1)
+    await _call(mw, _http_scope())
+    sent = await _call_full(mw, _http_scope())
+    start = next(m for m in sent if m["type"] == "http.response.start")
+    assert start["status"] == 429
+    assert (b"retry-after", b"60") in start["headers"]
+    body = next(m for m in sent if m["type"] == "http.response.body")
+    assert json.loads(body["body"]) == {"error": "rate limit exceeded"}
+
+
 async def test_zero_rpm_disables_limiting():
     mw = RateLimitMiddleware(_ok_app, requests_per_minute=0)
     for _ in range(10):
@@ -156,6 +214,17 @@ async def test_on_request_callback_gets_client_ip_and_path():
     await _call(mw, _http_scope(ip="9.9.9.9"))
     await _call(mw, _http_scope(ip="9.9.9.9", path="/health"))
     assert seen == [("9.9.9.9", "/mcp")], "exempt paths are not counted"
+
+
+async def test_on_throttled_callback_fires_on_429():
+    """Rejected requests must be observable, not invisible to telemetry."""
+    seen = []
+    mw = RateLimitMiddleware(
+        _ok_app, requests_per_minute=1, on_throttled=lambda ip, path: seen.append((ip, path))
+    )
+    assert await _call(mw, _http_scope(ip="9.9.9.9")) == 200
+    assert await _call(mw, _http_scope(ip="9.9.9.9")) == 429
+    assert seen == [("9.9.9.9", "/mcp")]
 
 
 # --- Body size limiting ---
@@ -180,9 +249,30 @@ async def test_body_limit_allows_small_bodies():
     assert await _call(mw, scope, body_chunks=[b"ok!!"]) == 200
 
 
+async def test_body_limit_on_rejected_callback():
+    seen = []
+    mw = BodyLimitMiddleware(_ok_app, max_bytes=10, on_rejected=lambda path: seen.append(path))
+    scope = _http_scope()
+    scope["headers"].append((b"content-length", b"11"))
+    assert await _call(mw, scope) == 413
+    assert await _call(mw, _http_scope(), body_chunks=[b"x" * 8, b"y" * 8]) == 413
+    assert seen == ["/mcp", "/mcp"]
+
+
 async def test_body_limit_zero_disables():
     mw = BodyLimitMiddleware(_ok_app, max_bytes=0)
     assert await _call(mw, _http_scope(), body_chunks=[b"x" * 1000]) == 200
+
+
+async def test_413_response_body():
+    mw = BodyLimitMiddleware(_ok_app, max_bytes=10)
+    scope = _http_scope()
+    scope["headers"].append((b"content-length", b"11"))
+    sent = await _call_full(mw, scope)
+    start = next(m for m in sent if m["type"] == "http.response.start")
+    assert start["status"] == 413
+    body = next(m for m in sent if m["type"] == "http.response.body")
+    assert json.loads(body["body"]) == {"error": "request body too large"}
 
 
 def test_telemetry_disabled_without_connection_string(monkeypatch):
@@ -211,3 +301,46 @@ def test_hash_client_ip_is_stable_and_anonymous():
     assert h1 == h2
     assert "1.2.3.4" not in h1
     assert len(h1) == 16
+
+
+class _FakeDate:
+    """Stand-in for the `date` class exposing a fixed today()."""
+
+    def __init__(self, fixed):
+        self._fixed = fixed
+
+    def today(self):
+        return self._fixed
+
+
+def test_hash_client_ip_salt_rotates_daily(monkeypatch):
+    monkeypatch.setattr(telemetry, "date", _FakeDate(datetime.date(2026, 7, 1)))
+    day1 = telemetry.hash_client_ip("1.2.3.4")
+    monkeypatch.setattr(telemetry, "date", _FakeDate(datetime.date(2026, 7, 2)))
+    day2 = telemetry.hash_client_ip("1.2.3.4")
+    assert day1 != day2, "per-day salt must rotate the hash across days"
+
+
+def test_telemetry_enabled_path_emits_structured_records(monkeypatch, caplog):
+    monkeypatch.setattr(telemetry, "_enabled", True)
+    with caplog.at_level(logging.INFO, logger="patch_tuesday_mcp.telemetry"):
+        telemetry.track_event("test_event", {"a": 1})
+        telemetry.track_request("1.2.3.4", "/mcp")
+        telemetry.track_throttled("1.2.3.4", "/mcp")
+        telemetry.track_rejected_body("/mcp")
+        telemetry.track_tool_call("msrc_search", {"query": "x"}, 5, 12.3, error_kind="upstream")
+
+    names = [r.event_name for r in caplog.records]
+    assert names == [
+        "test_event",
+        "http_request",
+        "http_throttled",
+        "http_rejected_body",
+        "tool_call",
+    ]
+    request_record = caplog.records[1]
+    assert request_record.custom_user_hash != "1.2.3.4", "IPs are hashed, never raw"
+    tool_record = caplog.records[-1]
+    assert tool_record.custom_params_used == "query"
+    assert "x" not in str(tool_record.custom_params_used), "query values are not recorded"
+    assert tool_record.custom_error_kind == "upstream"

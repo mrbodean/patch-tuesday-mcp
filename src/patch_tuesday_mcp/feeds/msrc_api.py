@@ -5,6 +5,8 @@ https://github.com/microsoft/MSRC-Microsoft-Security-Updates-API
 """
 
 import asyncio
+import json
+import os
 import time
 from datetime import datetime, timezone
 
@@ -16,6 +18,11 @@ from . import http_client
 
 MSRC_API_BASE = "https://api.msrc.microsoft.com/cvrf/v3.0"
 
+# Cap on a single upstream response body. Monthly CVRF docs run ~10-20 MiB;
+# anything far beyond that would exhaust the 0.5 GiB container, so reads are
+# bounded while streaming instead of buffered whole.
+MAX_RESPONSE_BYTES = int(os.getenv("MCP_MSRC_MAX_RESPONSE_BYTES", str(64 * 1024 * 1024)))
+
 # Monthly docs can receive revisions; refresh recent months hourly. Older
 # months change rarely and are cached until evicted.
 RECENT_MONTH_TTL_SECONDS = 3600
@@ -25,8 +32,10 @@ RECENT_MONTHS_WITH_TTL = 2
 # The MSRC index spans 125+ months, each a multi-MB document that parses to
 # even more; unbounded caches would OOM a small container if someone iterates
 # months. Full parses (with descriptions/FAQs) are the big ones; slim parses
-# are kept longer because chain walking scans up to 24 months.
-MAX_FULL_MONTHS_CACHED = 6
+# are kept longer because chain walking scans up to 24 months. The full cap
+# matches MAX_TREND_MONTHS (12) so a maximum trend query doesn't evict its own
+# earlier months mid-request (a cold 12-month trend measured ~77 MiB peak).
+MAX_FULL_MONTHS_CACHED = 12
 MAX_SLIM_MONTHS_CACHED = 40
 
 # Bound concurrent upstream fetch+parse work (each doc is multi-MB)
@@ -166,18 +175,19 @@ async def _get_json(url: str, timeout: float = 60.0) -> dict:
     """GET a URL and return parsed JSON, raising MsrcApiError on failure."""
     headers = {"Accept": "application/json"}
     try:
-        client = http_client.get_client()
-        response = await client.get(url, headers=headers, timeout=timeout)
+        status, body = await http_client.get_bounded(
+            url, headers=headers, timeout=timeout, max_bytes=MAX_RESPONSE_BYTES
+        )
     except httpx.HTTPError as exc:
         raise MsrcApiError(f"MSRC API request failed: {exc}") from exc
 
-    if response.status_code == 404:
+    if status == 404:
         raise MsrcApiError("not found")
-    if response.status_code != 200:
-        raise MsrcApiError(f"MSRC API returned HTTP {response.status_code}")
+    if status != 200:
+        raise MsrcApiError(f"MSRC API returned HTTP {status}")
 
     try:
-        return response.json()
+        return json.loads(body)
     except ValueError as exc:
         raise MsrcApiError("MSRC API returned invalid JSON") from exc
 
@@ -233,14 +243,20 @@ async def _cached_month(month_id: str, slim: bool, now: float) -> MonthlyRelease
         if cached:
             fetched_at, release = cached
             if not await _is_recent_month(month_id) or now - fetched_at < RECENT_MONTH_TTL_SECONDS:
+                # LRU: move the hit to the end of the dict's insertion order
+                # so eviction targets the least recently *used* month, while
+                # fetched_at stays intact for TTL freshness.
+                del cache[month_id]
+                cache[month_id] = cached
                 return release
     return None
 
 
 def _evict_oldest(cache: dict[str, tuple[float, MonthlyRelease]], max_entries: int) -> None:
+    # Dicts preserve insertion order and hits are re-inserted, so the first
+    # key is the least recently used entry.
     while len(cache) > max_entries:
-        oldest = min(cache, key=lambda k: cache[k][0])
-        del cache[oldest]
+        del cache[next(iter(cache))]
 
 
 async def fetch_month(
@@ -255,6 +271,9 @@ async def fetch_month(
     if not force_refresh:
         cached = await _cached_month(month_id, slim, time.monotonic())
         if cached is not None:
+            telemetry.track_event(
+                "msrc_fetch", {"month": month_id, "slim": slim, "cache_hit": True}
+            )
             return cached
 
     lock = _month_locks.setdefault(month_id, asyncio.Lock())
@@ -263,6 +282,9 @@ async def fetch_month(
         if not force_refresh:
             cached = await _cached_month(month_id, slim, time.monotonic())
             if cached is not None:
+                telemetry.track_event(
+                    "msrc_fetch", {"month": month_id, "slim": slim, "cache_hit": True}
+                )
                 return cached
 
         start = time.perf_counter()
@@ -274,6 +296,7 @@ async def fetch_month(
             {
                 "month": month_id,
                 "slim": slim,
+                "cache_hit": False,
                 "duration_ms": round((time.perf_counter() - start) * 1000, 1),
             },
         )

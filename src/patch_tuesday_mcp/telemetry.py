@@ -88,6 +88,20 @@ def track_request(ip: str, path: str = "/mcp") -> None:
     )
 
 
+def track_throttled(ip: str, path: str = "/mcp") -> None:
+    """Record a rate-limited (429) request with a hashed client IP."""
+    if not _enabled:
+        return
+    track_event("http_throttled", {"user_hash": hash_client_ip(ip), "path": path})
+
+
+def track_rejected_body(path: str = "/mcp") -> None:
+    """Record a request rejected for an oversized body (413)."""
+    if not _enabled:
+        return
+    track_event("http_rejected_body", {"path": path})
+
+
 def track_tool_call(
     tool: str, filters_applied: dict, total_found: int, duration_ms: float, error_kind: str = ""
 ) -> None:

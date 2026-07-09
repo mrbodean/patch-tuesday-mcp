@@ -23,6 +23,11 @@ Patch Tuesday MCP Server bridges Microsoft's official CVRF security update API a
 - **Avoid stale patches** - "Is KB5087538 superseded by anything newer?" — walks Microsoft's supersedence links
 - **Get mitigations when there's no patch yet** - "Are there mitigations or workarounds for CVE-2026-47291?" — surfaces Microsoft's mitigation, workaround, and will-not-fix guidance
 - **Spot trends over time** - "How many HTTP.sys CVEs shipped over the last 6 months?" (`months_back=6`, or `start_month`/`end_month`) — aggregates matches across released months with per-month counts
+- **Filter by Microsoft's own exploitation forecast** - "Which of this month's CVEs does Microsoft rate 'Exploitation More Likely'?" (`exploitation_likely=True`)
+- **Spot ransomware-weaponized CVEs** - "Which CVEs this month are used in known ransomware campaigns?" (`ransomware=True`; add `include_kev_details=True` for the full CISA entry with required actions)
+- **Plan the deployment, not just the priority** - "Does KB5094123 require a restart, and what build fixes it?" (`include_kb_details=True` adds per-KB URLs, fixed builds, supersedence, and restart requirements)
+- **Slice a month by weakness class** - "Show me this month's use-after-free CVEs" (`cwe="CWE-416"` or `cwe="use after free"`)
+- **Discover the release catalog** - "Which monthly releases are available, and when were they last revised?" (`list_months=True`)
 - **Export a triage briefing** - "Give me this month's Critical CVEs as a Markdown report" or "…as CSV" — a prioritized executive summary and table, or a spreadsheet-ready export (`format="markdown"` / `format="csv"`)
 - **Force-refresh & check data freshness** - "Re-pull this month's data fresh" (`force_refresh=True`) bypasses the in-process caches; `include_freshness=True` reports the cache age/TTL of the MSRC document and EPSS/KEV enrichment
 - **Prioritize patching** - Results are sorted most-urgent-first: KEV/exploited, then EPSS, then severity, then CVSS
@@ -131,7 +136,7 @@ pip install --upgrade patch-tuesday-mcp
 
 ## Features
 
-- **msrc_search** – Search and filter Microsoft security updates by keyword, CVE, KB number, month, product, severity, CVSS score, exploited-in-the-wild status, or public disclosure. When no month is given, results default to the most recent release whose Patch Tuesday has already occurred — the upcoming month's pre-release document (early Chromium/out-of-band entries only) is skipped by default and available explicitly via `month=`. Results are enriched with **EPSS scores** (FIRST.org 30-day exploitation probability, `min_epss=0.5` filter) and **CISA KEV** catalog status with federal remediation due dates (`kev=True` filter) — both public, keyless sources. Filter by the **parsed CVSS v3.x exposure fields** — `attack_vector` (N/A/L/P), `privileges_required` (N/L/H), `user_interaction` (N/R), and `scope` (U/C) — to isolate, for example, network-reachable zero-click criticals; matching results surface a structured `cvss` object broken out from the raw vector string. Every CVE detail also includes a **references** block of ready-to-open links (MSRC update guide, NVD, EPSS API, and the CISA KEV catalog when the CVE is listed). Add `include_chain=True` to a KB lookup to walk Microsoft-stated **supersedence chains** (which KBs it replaces, newest → oldest). Add `include_guidance=True` to a CVE lookup to surface Microsoft-provided **mitigations, workarounds, and will-not-fix advisories** alongside the vendor-fix KBs. Pass `format="markdown"` or `format="csv"` to a monthly/filtered search to get an additive **triage briefing** — a prioritized executive summary and table (Markdown) or a spreadsheet-ready export with stable columns (CSV) — rendered from the same urgency ranking; the JSON `vulnerabilities` list is always included. Use `force_refresh=True` to bypass the in-process caches and re-fetch the MSRC document and EPSS/KEV enrichment for the request, and `include_freshness=True` to add a **freshness** block reporting the cache age and TTL of the MSRC document and enrichment data. Search a **historical range** instead of a single month with `months_back=N` (the N most recent released months) or `start_month`/`end_month` — the response aggregates matching CVEs across the range and adds per-month **trend** counts; ranges are capped at 12 months and reuse the existing cache/concurrency controls. Set `include_stats=True` for aggregate counts (by severity, impact, product family, exploited, KEV). Use `limit=0` with `include_stats=True` for a stats-only month overview.
+- **msrc_search** – Search and filter Microsoft security updates by keyword, CVE, KB number, month, product, severity, CVSS score, exploited-in-the-wild status, or public disclosure. When no month is given, results default to the most recent release whose Patch Tuesday has already occurred — the upcoming month's pre-release document (early Chromium/out-of-band entries only) is skipped by default and available explicitly via `month=`. Results are enriched with **EPSS scores** (FIRST.org 30-day exploitation probability, `min_epss=0.5` filter) and **CISA KEV** catalog status with federal remediation due dates (`kev=True` filter) — both public, keyless sources. Filter by the **parsed CVSS v3.x exposure fields** — `attack_vector` (N/A/L/P), `privileges_required` (N/L/H), `user_interaction` (N/R), and `scope` (U/C) — to isolate, for example, network-reachable zero-click criticals; matching results surface a structured `cvss` object broken out from the raw vector string. Every CVE detail also includes a **references** block of ready-to-open links (MSRC update guide, NVD, EPSS API, and the CISA KEV catalog when the CVE is listed). Add `include_chain=True` to a KB lookup to walk Microsoft-stated **supersedence chains** (which KBs it replaces, newest → oldest). Add `include_guidance=True` to a CVE lookup to surface Microsoft-provided **mitigations, workarounds, and will-not-fix advisories** alongside the vendor-fix KBs. Pass `format="markdown"` or `format="csv"` to a monthly/filtered search to get an additive **triage briefing** — a prioritized executive summary and table (Markdown) or a spreadsheet-ready export with stable columns (CSV) — rendered from the same urgency ranking; the JSON `vulnerabilities` list is always included. Use `force_refresh=True` to bypass the in-process caches and re-fetch the MSRC document and EPSS/KEV enrichment for the request, and `include_freshness=True` to add a **freshness** block reporting the cache age and TTL of the MSRC document and enrichment data. Search a **historical range** instead of a single month with `months_back=N` (the N most recent released months) or `start_month`/`end_month` — the response aggregates matching CVEs across the range and adds per-month **trend** counts; ranges are capped at 12 months and reuse the existing cache/concurrency controls. Set `include_stats=True` for aggregate counts (by severity, impact, product family, exploited, KEV). Use `limit=0` with `include_stats=True` for a stats-only month overview. Filter on **Microsoft's exploitation-likelihood assessment** with `exploitation_likely=True` ("Exploitation More Likely"/"Exploitation Detected"; matches carry an `exploitation_assessment` field) and on **known ransomware campaign use** with `ransomware=True` (from the CISA KEV catalog). Opt into richer rows where you need them: `include_references=True` adds the MSRC/NVD/EPSS/KEV link block to month/KB/trend list results, `include_kev_details=True` replaces the boolean KEV flag with the full catalog entry (due date, required action, vendor/product, ransomware use), `include_kb_details=True` expands KB numbers into full objects with per-KB URL, fixed build, supersedence, sub-type, and **restart-required** status, and `include_temporal=True` adds Microsoft's **CVSS temporal score** to cvss blocks. Filter by **weakness class** with `cwe=` (ID or name substring, e.g. `cwe="CWE-416"`). Use `list_months=True` to fetch the **release catalog** (every available month with initial/current release dates — handy for valid `month=` values and spotting same-month revisions). All new fields are opt-in: the default JSON shape is unchanged.
 
 ## Prompt Examples
 
@@ -152,6 +157,11 @@ Once connected to an MCP client, you can ask questions like:
 13. **Fresh data on demand**: "Re-pull this month's updates fresh and tell me how current the data is" (`force_refresh=True`, `include_freshness=True`)
 14. **Historical trends**: "How many HTTP.sys RCE CVEs shipped over the last 6 months?" (`query="HTTP.sys"`, `months_back=6`)
 15. **Supersedence**: "Is KB5087538 superseded by anything newer?"
+16. **Exploitation forecast**: "Which CVEs does Microsoft rate 'Exploitation More Likely' this month?"
+17. **Ransomware**: "Which of this month's CVEs are used in known ransomware campaigns?"
+18. **Deployment planning**: "Does KB5094123 require a restart, and which build fixes it?"
+19. **Weakness class**: "Show me this month's use-after-free vulnerabilities" (`cwe="CWE-416"`)
+20. **Release catalog**: "Which Patch Tuesday months are available to query?"
 
 ## Usage
 
@@ -296,8 +306,13 @@ HTTP-mode environment variables:
 | `RATE_LIMIT_RPM` | `60` | Per-IP requests/minute (`0` disables) |
 | `MCP_MAX_BODY_BYTES` | `262144` | Max request body size, returns 413 above it (`0` disables) |
 | `MCP_CORS_ORIGINS` | `*` (all) | Comma-separated allowlist of browser origins. **Set an explicit list for public deployments** (e.g. `https://app.example.com`) |
-| `MCP_TRUST_X_FORWARDED_FOR` | `true` | Whether to derive the client IP for rate limiting from the `X-Forwarded-For` header. Set to `false` when the server is **directly exposed** (no reverse proxy), so a spoofed header can't evade or poison the limiter |
+| `MCP_TRUST_X_FORWARDED_FOR` | `true` | Whether the `X-Forwarded-For` header may be used to derive the client IP for rate limiting. Even when `true`, the header is only honored if the request arrives from a **private/loopback peer** (an ingress proxy) or a listed trusted proxy — a directly exposed public peer can never forge it. Set to `false` to ignore the header entirely |
 | `MCP_TRUSTED_PROXIES` | unset | Comma-separated proxy IPs. When set, `X-Forwarded-For` is only honored if the request arrives via one of these proxies, and the client is resolved as the right-most hop that is not itself a trusted proxy (unwinds chained proxies) |
+| `MCP_LIMIT_CONCURRENCY` | `40` | Max concurrent in-flight connections; uvicorn responds 503 beyond it (`0` disables) |
+| `MCP_TIMEOUT_KEEP_ALIVE` | `15` | Seconds before idle keep-alive connections are closed |
+| `MCP_LOG_LEVEL` | `WARNING` | Root log level (`DEBUG`/`INFO`/`WARNING`/`ERROR`/`CRITICAL`); logs go to stderr |
+| `MCP_MSRC_MAX_RESPONSE_BYTES` | `67108864` (64 MiB) | Cap on a single MSRC upstream response body (read while streaming, never buffered past the cap) |
+| `MCP_ENRICHMENT_MAX_RESPONSE_BYTES` | `33554432` (32 MiB) | Cap on a single EPSS/KEV upstream response body |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | unset | Opt-in usage telemetry (requires `pip install patch-tuesday-mcp[telemetry]`) |
 
 HTTP mode also serves `GET /health` (liveness endpoint, exempt from rate
@@ -318,13 +333,18 @@ to the internet:
 - **Restrict CORS.** Set `MCP_CORS_ORIGINS` to the exact origins of your MCP
   clients instead of the permissive `*` default.
 - **Set the proxy trust correctly.** When behind a reverse proxy, leave
-  `MCP_TRUST_X_FORWARDED_FOR=true` and set `MCP_TRUSTED_PROXIES` to your
-  proxy/ingress IP(s) so per-IP rate limiting keys on the real client. When the
-  container is reachable directly (no proxy), set
-  `MCP_TRUST_X_FORWARDED_FOR=false` so clients cannot forge the header.
-- **Keep the defaults on.** Leave `RATE_LIMIT_RPM` and `MCP_MAX_BODY_BYTES` at
-  their defaults (or tighten them) — they are your first line of defense against
-  floods and oversized payloads.
+  `MCP_TRUST_X_FORWARDED_FOR=true` and (ideally) set `MCP_TRUSTED_PROXIES` to
+  your proxy/ingress IP(s) so per-IP rate limiting keys on the real client.
+  The default is already forge-resistant: without an allowlist, the header is
+  only honored when the request arrives from a private/loopback peer, so a
+  directly exposed container ignores forged headers automatically.
+- **Keep the defaults on.** Leave `RATE_LIMIT_RPM`, `MCP_MAX_BODY_BYTES`, and
+  `MCP_LIMIT_CONCURRENCY` at their defaults (or tighten them) — they are your
+  first line of defense against floods, oversized payloads, and connection
+  exhaustion.
+- **Upstream reads are bounded and redirect-free.** Responses from MSRC/EPSS/
+  KEV are size-capped while streaming and HTTP redirects are never followed,
+  so a misbehaving upstream can't exhaust container memory.
 
 Local `stdio` usage is unaffected by all of the above; none of this middleware
 runs for the default transport.
@@ -343,8 +363,20 @@ The container runs on any host that can serve HTTP — Azure Container Apps, Clo
 pip install -e ".[dev]"
 pytest                  # offline suite (mocked feeds)
 pytest --run-live       # also run live smoke tests against the real MSRC / EPSS / KEV APIs
+pytest --cov=patch_tuesday_mcp   # coverage (CI enforces >= 90%)
 ruff check src/ tests/
 ```
+
+CI (GitHub Actions) runs the offline suite on Python 3.11/3.12 with a coverage
+gate, lints with ruff, builds the container, scans it with Trivy, and produces
+an SPDX SBOM on every push/PR. Release builds attest provenance for the
+published wheel/sdist. Dependencies are locked in `uv.lock` (used by the Docker
+build via `uv sync --locked`).
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for the supported versions, scope, and how to
+report a vulnerability privately.
 
 ## License
 

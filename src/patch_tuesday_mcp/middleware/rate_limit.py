@@ -4,12 +4,22 @@ Only used when the server runs with MCP_TRANSPORT=http (a public remote
 endpoint). Local stdio usage never passes through this middleware.
 """
 
+import ipaddress
 import json
 import time
 
 # Buckets older than this are pruned to bound memory usage
 STALE_BUCKET_SECONDS = 600
 PRUNE_THRESHOLD = 10_000
+
+
+def _is_private_address(ip: str) -> bool:
+    """Whether an IP is private/loopback (i.e. plausibly an internal ingress)."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return addr.is_private or addr.is_loopback
 
 
 class RateLimitMiddleware:
@@ -21,10 +31,12 @@ class RateLimitMiddleware:
             bucket capacity equals this value, refilled continuously.
         on_request: Optional callback invoked with (client IP, path) for each
             allowed request (used for telemetry).
+        on_throttled: Optional callback invoked with (client IP, path) for
+            each rejected (429) request, so throttling is observable.
         exempt_paths: Paths that bypass rate limiting and the on_request
             callback (health probes must not consume budget or be counted).
-        trust_x_forwarded_for: When True, the ``X-Forwarded-For`` header is
-            consulted to determine the client IP (the server is behind a
+        trust_x_forwarded_for: When True, the ``X-Forwarded-For`` header may
+            be consulted to determine the client IP (the server is behind a
             reverse proxy / ingress). When False, only the direct TCP peer is
             used and the header is ignored — the correct choice when the
             server is directly exposed, since anyone could otherwise spoof the
@@ -33,8 +45,11 @@ class RateLimitMiddleware:
             ``X-Forwarded-For`` is only honored if the direct peer is one of
             these proxies, and the resolved client is the right-most hop that
             is *not* itself a trusted proxy (so chained proxies are unwound
-            correctly). When empty, the right-most hop appended by the single
-            ingress proxy in front of us is trusted.
+            correctly). When empty, the right-most hop is honored only if the
+            direct peer is a private/loopback address (an internal ingress
+            proxy); requests arriving straight from a public peer never have
+            their header trusted, so a directly exposed deployment cannot be
+            bypassed with forged headers.
     """
 
     def __init__(
@@ -42,6 +57,7 @@ class RateLimitMiddleware:
         app,
         requests_per_minute: int = 60,
         on_request=None,
+        on_throttled=None,
         exempt_paths: frozenset[str] = frozenset({"/health"}),
         trust_x_forwarded_for: bool = True,
         trusted_proxies: frozenset[str] = frozenset(),
@@ -49,6 +65,7 @@ class RateLimitMiddleware:
         self.app = app
         self.rpm = requests_per_minute
         self.on_request = on_request
+        self.on_throttled = on_throttled
         self.exempt_paths = exempt_paths
         self.trust_x_forwarded_for = trust_x_forwarded_for
         self.trusted_proxies = trusted_proxies
@@ -74,10 +91,14 @@ class RateLimitMiddleware:
         if not hops:
             return direct
 
-        # No explicit proxy allowlist: trust the right-most hop, which is the
-        # one appended by the single ingress proxy in front of us. Earlier
-        # entries are client-supplied and spoofable.
+        # No explicit proxy allowlist: only a private/loopback peer (an
+        # ingress proxy on the local network) is assumed to have appended a
+        # truthful right-most hop. A publicly-routable peer reached us
+        # directly, so it IS the client and its header is forgeable — using
+        # it would let anyone mint a fresh bucket per request.
         if not self.trusted_proxies:
+            if not _is_private_address(direct):
+                return direct
             return hops[-1]
 
         # With an allowlist, only honor the header when the request actually
@@ -135,6 +156,8 @@ class RateLimitMiddleware:
 
         ip = self._client_ip(scope)
         if not self._allow(ip):
+            if self.on_throttled is not None:
+                self.on_throttled(ip, path)
             body = json.dumps({"error": "rate limit exceeded"}).encode()
             await send(
                 {

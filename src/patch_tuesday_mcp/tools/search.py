@@ -1,6 +1,7 @@
 """Unified search tool for querying MSRC security updates (Patch Tuesday)."""
 
 import asyncio
+import logging
 import re
 import time
 from typing import Annotated
@@ -11,6 +12,7 @@ from .. import telemetry
 from ..feeds import enrichment, msrc_api
 from ..feeds.msrc_api import MsrcApiError
 from ..models.vulnerability import (
+    EXPLOITATION_LIKELY_VALUES,
     SEVERITY_ORDER,
     MonthlyRelease,
     Vulnerability,
@@ -18,6 +20,8 @@ from ..models.vulnerability import (
     sort_vulnerabilities,
 )
 from . import formatters
+
+logger = logging.getLogger(__name__)
 
 _CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
 
@@ -58,6 +62,9 @@ async def msrc_search(
     exploited: bool | None = None,
     publicly_disclosed: bool | None = None,
     kev: bool | None = None,
+    ransomware: bool | None = None,
+    exploitation_likely: bool | None = None,
+    cwe: str | None = None,
     min_epss: Annotated[float | None, Field(ge=0, le=1)] = None,
     min_cvss: Annotated[float | None, Field(ge=0, le=10)] = None,
     attack_vector: str | None = None,
@@ -66,6 +73,11 @@ async def msrc_search(
     scope: str | None = None,
     include_chain: bool = False,
     include_guidance: bool = False,
+    include_references: bool = False,
+    include_kb_details: bool = False,
+    include_kev_details: bool = False,
+    include_temporal: bool = False,
+    list_months: bool = False,
     format: str = "json",
     report: str | None = None,
     force_refresh: bool = False,
@@ -142,6 +154,16 @@ async def msrc_search(
             vulnerabilities.
         kev: Optional filter for CVEs on (True) or off (False) the CISA Known
             Exploited Vulnerabilities catalog.
+        ransomware: Optional filter for CVEs whose CISA KEV entry reports
+            known ransomware campaign use (True) or not / not on KEV (False).
+        exploitation_likely: Optional filter on Microsoft's latest-release
+            exploitation assessment: True matches "Exploitation More Likely"
+            or "Exploitation Detected"; False matches everything else
+            (including unassessed entries). Matching results include an
+            exploitation_assessment field.
+        cwe: Optional weakness filter; case-insensitive substring match
+            against CWE entries (e.g. "CWE-416" or "use after free").
+            Matching results include their cwe list.
         min_epss: Optional minimum EPSS score (0-1), the probability of
             exploitation in the next 30 days (e.g. 0.5 for >= 50%).
         min_cvss: Optional minimum CVSS base score (0-10).
@@ -160,6 +182,24 @@ async def msrc_search(
             the CVE detail output with any Microsoft-provided mitigations,
             workarounds, and will-not-fix advisories (type/description/url).
             Omitted by default to keep responses lean. Ignored without cve=.
+        include_references: When True, adds deterministic reference links
+            (MSRC, NVD, EPSS, and KEV when listed) to each result row in
+            month/KB/trend lists. CVE detail lookups always include them.
+        include_kb_details: When True, kb_articles entries become full objects
+            (per-KB url, fixed_build, supersedence, sub_type, and
+            restart_required) instead of bare KB numbers; on cve= lookups it
+            additionally adds restart_required to each KB entry.
+        include_kev_details: When True, KEV-listed rows carry the full KEV
+            entry (due_date, ransomware_use, required_action, vendor_project,
+            product, vulnerability_name) instead of a boolean flag; on cve=
+            lookups it extends the kev block with the extra catalog fields.
+        include_temporal: When True, cvss blocks gain the CVSS temporal score
+            Microsoft publishes (exploit-code maturity adjusted). Applies to
+            cve= detail and to list rows that carry a cvss block.
+        list_months: When True, ignore other filters and return the catalog of
+            available monthly releases (id, title, initial/current release
+            dates, newest first) — useful for discovering valid month= values
+            and spotting same-month revisions.
         format: Output format for a monthly/filtered search: "json" (default,
             most complete), "markdown", or "csv". "markdown" adds a prioritized
             triage briefing (executive summary + table) under a markdown key;
@@ -216,43 +256,66 @@ async def msrc_search(
           via months_back or start_month/end_month) the resolved month range,
           the number of months searched, and per-month aggregate counts
           (total, by_severity, exploited, publicly_disclosed, kev)
+        - available_months: (only with list_months=True) the release catalog,
+          newest first
         - error / error_kind: (only on failure) a message plus a category
-          (invalid_input, not_found, upstream)
+          (invalid_input, not_found, upstream, internal)
         - note: (when relevant) explains month selection, e.g. that a newer
           pre-Patch-Tuesday document was skipped, or (with
           release_status="pre-patch-tuesday") that the requested month has
           not had its Patch Tuesday yet
     """
     start = time.perf_counter()
-    result = await _search_impl(
-        query=query,
-        cve=cve,
-        kb=kb,
-        month=month,
-        product=product,
-        severity=severity,
-        exploited=exploited,
-        publicly_disclosed=publicly_disclosed,
-        kev=kev,
-        min_epss=min_epss,
-        min_cvss=min_cvss,
-        attack_vector=attack_vector,
-        privileges_required=privileges_required,
-        user_interaction=user_interaction,
-        scope=scope,
-        include_chain=include_chain,
-        include_guidance=include_guidance,
-        format=format,
-        report=report,
-        force_refresh=force_refresh,
-        include_freshness=include_freshness,
-        months_back=months_back,
-        start_month=start_month,
-        end_month=end_month,
-        limit=limit,
-        offset=offset,
-        include_stats=include_stats,
-    )
+    try:
+        result = await _search_impl(
+            query=query,
+            cve=cve,
+            kb=kb,
+            month=month,
+            product=product,
+            severity=severity,
+            exploited=exploited,
+            publicly_disclosed=publicly_disclosed,
+            kev=kev,
+            ransomware=ransomware,
+            exploitation_likely=exploitation_likely,
+            cwe=cwe,
+            min_epss=min_epss,
+            min_cvss=min_cvss,
+            attack_vector=attack_vector,
+            privileges_required=privileges_required,
+            user_interaction=user_interaction,
+            scope=scope,
+            include_chain=include_chain,
+            include_guidance=include_guidance,
+            include_references=include_references,
+            include_kb_details=include_kb_details,
+            include_kev_details=include_kev_details,
+            include_temporal=include_temporal,
+            list_months=list_months,
+            format=format,
+            report=report,
+            force_refresh=force_refresh,
+            include_freshness=include_freshness,
+            months_back=months_back,
+            start_month=start_month,
+            end_month=end_month,
+            limit=limit,
+            offset=offset,
+            include_stats=include_stats,
+        )
+    except Exception:
+        # Contract: msrc_search never raises. Anything _search_impl did not
+        # convert itself (unexpected CVRF shapes, plumbing bugs) is logged
+        # server-side and reported generically so internals don't leak.
+        logger.exception("msrc_search failed unexpectedly")
+        result = {
+            "total_found": 0,
+            "vulnerabilities": [],
+            "filters_applied": {},
+            "error": "The search failed due to an unexpected internal error.",
+            "error_kind": "internal",
+        }
     telemetry.track_tool_call(
         "msrc_search",
         result.get("filters_applied", {}),
@@ -273,6 +336,9 @@ async def _search_impl(
     exploited: bool | None,
     publicly_disclosed: bool | None,
     kev: bool | None,
+    ransomware: bool | None,
+    exploitation_likely: bool | None,
+    cwe: str | None,
     min_epss: float | None,
     min_cvss: float | None,
     attack_vector: str | None,
@@ -281,6 +347,11 @@ async def _search_impl(
     scope: str | None,
     include_chain: bool,
     include_guidance: bool,
+    include_references: bool,
+    include_kb_details: bool,
+    include_kev_details: bool,
+    include_temporal: bool,
+    list_months: bool,
     format: str,
     report: str | None,
     force_refresh: bool,
@@ -294,11 +365,32 @@ async def _search_impl(
 ) -> dict:
     # --- CVE fast path: cross-month single-CVE detail lookup ---
     if cve:
-        return await _lookup_cve(cve, include_guidance, force_refresh)
+        return await _lookup_cve(
+            cve,
+            include_guidance,
+            force_refresh,
+            include_kb_details=include_kb_details,
+            include_kev_details=include_kev_details,
+            include_temporal=include_temporal,
+        )
 
     # --- KB fast path: which CVEs does this KB fix ---
     if kb:
-        return await _lookup_kb(kb, include_chain, month, limit, offset, force_refresh)
+        return await _lookup_kb(
+            kb,
+            include_chain,
+            month,
+            limit,
+            offset,
+            force_refresh,
+            include_references=include_references,
+            include_kb_details=include_kb_details,
+            include_kev_details=include_kev_details,
+        )
+
+    # --- Release-catalog discovery: which months exist ---
+    if list_months:
+        return await _list_months(force_refresh)
 
     filters_applied = _build_filters_summary(
         query=query,
@@ -308,6 +400,9 @@ async def _search_impl(
         exploited=exploited,
         publicly_disclosed=publicly_disclosed,
         kev=kev,
+        ransomware=ransomware,
+        exploitation_likely=exploitation_likely,
+        cwe=cwe,
         min_epss=min_epss,
         min_cvss=min_cvss,
         attack_vector=attack_vector,
@@ -366,6 +461,15 @@ async def _search_impl(
     offset = max(0, offset)
 
     # --- Historical trend path: aggregate across a range of released months ---
+    summary_options = {
+        "include_references": include_references,
+        "include_kb_details": include_kb_details,
+        "include_kev_details": include_kev_details,
+        "include_temporal": include_temporal,
+        "include_cwe": cwe is not None,
+        "include_exploitability": exploitation_likely is not None,
+    }
+
     if months_back is not None or start_month is not None or end_month is not None:
         return await _trend_search(
             filters_applied=filters_applied,
@@ -375,9 +479,13 @@ async def _search_impl(
             exploited=exploited,
             publicly_disclosed=publicly_disclosed,
             kev=kev,
+            ransomware=ransomware,
+            exploitation_likely=exploitation_likely,
+            cwe=cwe,
             min_epss=min_epss,
             min_cvss=min_cvss,
             vector_filters=vector_filters,
+            summary_options=summary_options,
             months_back=months_back,
             start_month=start_month,
             end_month=end_month,
@@ -423,6 +531,9 @@ async def _search_impl(
         exploited=exploited,
         publicly_disclosed=publicly_disclosed,
         kev=kev,
+        ransomware=ransomware,
+        exploitation_likely=exploitation_likely,
+        cwe=cwe,
         min_epss=min_epss,
         min_cvss=min_cvss,
         vector_filters=vector_filters,
@@ -436,7 +547,7 @@ async def _search_impl(
         **_release_header(release),
         "total_found": len(matched),
         "vulnerabilities": [
-            v.to_summary_dict(include_cvss=include_cvss)
+            v.to_summary_dict(include_cvss=include_cvss, **summary_options)
             for v in matched[offset : offset + limit]
         ],
         "filters_applied": filters_applied,
@@ -508,9 +619,13 @@ async def _trend_search(
     exploited: bool | None,
     publicly_disclosed: bool | None,
     kev: bool | None,
+    ransomware: bool | None,
+    exploitation_likely: bool | None,
+    cwe: str | None,
     min_epss: float | None,
     min_cvss: float | None,
     vector_filters: dict[str, str],
+    summary_options: dict,
     months_back: int | None,
     start_month: str | None,
     end_month: str | None,
@@ -623,6 +738,9 @@ async def _trend_search(
             exploited=exploited,
             publicly_disclosed=publicly_disclosed,
             kev=kev,
+            ransomware=ransomware,
+            exploitation_likely=exploitation_likely,
+            cwe=cwe,
             min_epss=min_epss,
             min_cvss=min_cvss,
             vector_filters=vector_filters,
@@ -641,7 +759,9 @@ async def _trend_search(
         },
         "months_searched": len(selected),
         "total_found": len(combined),
-        "vulnerabilities": [v.to_summary_dict(include_cvss=include_cvss) for v in page],
+        "vulnerabilities": [
+            v.to_summary_dict(include_cvss=include_cvss, **summary_options) for v in page
+        ],
         "trend": trend,
         "filters_applied": filters_applied,
     }
@@ -691,12 +811,23 @@ async def _enrich(vulnerabilities: list[Vulnerability], force_refresh: bool = Fa
 
 
 async def _lookup_cve(
-    cve: str, include_guidance: bool = False, force_refresh: bool = False
+    cve: str,
+    include_guidance: bool = False,
+    force_refresh: bool = False,
+    include_kb_details: bool = False,
+    include_kev_details: bool = False,
+    include_temporal: bool = False,
 ) -> dict:
     cve = cve.strip().upper()
     filters_applied: dict = {"cve": cve}
-    if include_guidance:
-        filters_applied["include_guidance"] = True
+    for name, flag in (
+        ("include_guidance", include_guidance),
+        ("include_kb_details", include_kb_details),
+        ("include_kev_details", include_kev_details),
+        ("include_temporal", include_temporal),
+    ):
+        if flag:
+            filters_applied[name] = True
     if force_refresh:
         filters_applied["force_refresh"] = True
     if not _CVE_RE.match(cve):
@@ -730,7 +861,14 @@ async def _lookup_cve(
     return {
         **_release_header(release),
         "total_found": 1,
-        "vulnerabilities": [vuln.to_detail_dict(include_guidance=include_guidance)],
+        "vulnerabilities": [
+            vuln.to_detail_dict(
+                include_guidance=include_guidance,
+                include_kb_details=include_kb_details,
+                include_kev_details=include_kev_details,
+                include_temporal=include_temporal,
+            )
+        ],
         "filters_applied": filters_applied,
     }
 
@@ -742,13 +880,22 @@ async def _lookup_kb(
     limit: int = 10,
     offset: int = 0,
     force_refresh: bool = False,
+    include_references: bool = False,
+    include_kb_details: bool = False,
+    include_kev_details: bool = False,
 ) -> dict:
     kb_number = kb.strip().upper().removeprefix("KB").strip()
     filters_applied = {"kb": f"KB{kb_number}"}
     if month is not None:
         filters_applied["month"] = month
-    if include_chain:
-        filters_applied["include_chain"] = True
+    for name, flag in (
+        ("include_chain", include_chain),
+        ("include_references", include_references),
+        ("include_kb_details", include_kb_details),
+        ("include_kev_details", include_kev_details),
+    ):
+        if flag:
+            filters_applied[name] = True
     if force_refresh:
         filters_applied["force_refresh"] = True
     if not kb_number.isdigit():
@@ -782,10 +929,16 @@ async def _lookup_kb(
     else:
         candidates = entries[:KB_SCAN_MONTHS]
 
+    scan_failures = 0
     for entry in candidates:
         try:
             release = await msrc_api.fetch_month(entry["id"], force_refresh=force_refresh)
-        except MsrcApiError:
+        except MsrcApiError as exc:
+            # A missing month document is a real "not there"; anything else
+            # (5xx, timeout) means the scan was incomplete and must not be
+            # reported as a definitive not-found.
+            if "not found" not in str(exc):
+                scan_failures += 1
             continue
         matched = [
             v for v in release.vulnerabilities if any(k.kb == kb_number for k in v.kb_articles)
@@ -796,7 +949,14 @@ async def _lookup_kb(
             response = {
                 **_release_header(release),
                 "total_found": len(matched),
-                "vulnerabilities": [v.to_summary_dict() for v in matched[offset : offset + limit]],
+                "vulnerabilities": [
+                    v.to_summary_dict(
+                        include_references=include_references,
+                        include_kb_details=include_kb_details,
+                        include_kev_details=include_kev_details,
+                    )
+                    for v in matched[offset : offset + limit]
+                ],
                 "filters_applied": filters_applied,
             }
             if include_chain:
@@ -804,11 +964,34 @@ async def _lookup_kb(
             return response
 
     where = month_id if month_id else f"the last {KB_SCAN_MONTHS} monthly releases"
+    if scan_failures:
+        return _error(
+            f"KB{kb_number} was not found in {where}, but {scan_failures} monthly "
+            "document(s) could not be fetched, so the scan was incomplete. Retry later.",
+            filters_applied,
+            kind="upstream",
+        )
     return _error(
         f"KB{kb_number} was not found in {where}.",
         filters_applied,
         kind="not_found",
     )
+
+
+async def _list_months(force_refresh: bool) -> dict:
+    """Return the catalog of available monthly releases, newest first."""
+    filters_applied: dict = {"list_months": True}
+    if force_refresh:
+        filters_applied["force_refresh"] = True
+    try:
+        entries = await msrc_api.fetch_update_index(force_refresh=force_refresh)
+    except MsrcApiError as exc:
+        return _error(str(exc), filters_applied, kind="upstream")
+    return {
+        "total_found": len(entries),
+        "available_months": [dict(e) for e in entries],
+        "filters_applied": filters_applied,
+    }
 
 
 def _collect_predecessors(kb_number: str, release: MonthlyRelease) -> dict[str, int]:
@@ -830,16 +1013,23 @@ def _collect_predecessors(kb_number: str, release: MonthlyRelease) -> dict[str, 
     return counts
 
 
-async def _find_kb_month(kb_number: str, months: list[dict]) -> MonthlyRelease | None:
-    """Scan monthly docs (slim parse) for the first one containing a KB."""
+async def _find_kb_month(kb_number: str, months: list[dict]) -> tuple[MonthlyRelease | None, int]:
+    """Scan monthly docs (slim parse) for the first one containing a KB.
+
+    Returns (release_or_None, fetch_failure_count) so callers can distinguish
+    "definitively not there" from "the scan itself was incomplete".
+    """
+    failures = 0
     for entry in months:
         try:
             release = await msrc_api.fetch_month(entry["id"], slim=True)
-        except MsrcApiError:
+        except MsrcApiError as exc:
+            if "not found" not in str(exc):
+                failures += 1
             continue
         if any(k.kb == kb_number for v in release.vulnerabilities for k in v.kb_articles):
-            return release
-    return None
+            return release, failures
+    return None, failures
 
 
 async def _walk_chain(kb_number: str, release: MonthlyRelease, entries: list[dict]) -> dict:
@@ -884,12 +1074,20 @@ async def _walk_chain(kb_number: str, release: MonthlyRelease, entries: list[dic
 
         # Predecessors are older, so scan from the current month backward
         # (same month included: out-of-band updates can supersede within it)
-        predecessor_release = await _find_kb_month(target, window[pos:])
+        predecessor_release, fetch_failures = await _find_kb_month(target, window[pos:])
         if predecessor_release is None:
-            note = (
-                f"Stopped: KB{target} was not found within the "
-                f"{CHAIN_SCAN_MONTHS}-month scan window."
-            )
+            if fetch_failures:
+                note = (
+                    f"Stopped: KB{target} was not found within the "
+                    f"{CHAIN_SCAN_MONTHS}-month scan window, but {fetch_failures} "
+                    "monthly document(s) could not be fetched; the chain may be "
+                    "incomplete."
+                )
+            else:
+                note = (
+                    f"Stopped: KB{target} was not found within the "
+                    f"{CHAIN_SCAN_MONTHS}-month scan window."
+                )
             break
         current_kb = target
         current_release = predecessor_release
@@ -914,9 +1112,13 @@ def _filter_vulnerabilities(
     min_epss: float | None,
     min_cvss: float | None,
     vector_filters: dict[str, str] | None = None,
+    ransomware: bool | None = None,
+    exploitation_likely: bool | None = None,
+    cwe: str | None = None,
 ) -> list[Vulnerability]:
     query_lower = query.lower() if query else None
     product_lower = product.lower() if product else None
+    cwe_lower = cwe.strip().lower() if cwe else None
     vector_filters = vector_filters or {}
 
     matched = []
@@ -938,6 +1140,21 @@ def _filter_vulnerabilities(
             continue
         if kev is not None and (v.kev is not None) != kev:
             continue
+        if ransomware is not None:
+            known = (
+                v.kev is not None
+                and str(v.kev.get("ransomware_use") or "").lower() == "known"
+            )
+            if known != ransomware:
+                continue
+        if exploitation_likely is not None:
+            # Fail-open: entries without an assessment are never "likely"
+            likely = v.exploitation_assessment in EXPLOITATION_LIKELY_VALUES
+            if likely != exploitation_likely:
+                continue
+        if cwe_lower:
+            if not any(cwe_lower in entry.lower() for entry in v.cwe):
+                continue
         if min_epss is not None and (v.epss_score is None or v.epss_score < min_epss):
             continue
         if min_cvss is not None and (v.max_cvss is None or v.max_cvss < min_cvss):

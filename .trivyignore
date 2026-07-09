@@ -1,0 +1,12 @@
+# Trivy suppressions — each entry must have a justification and a tracking note.
+# The scan still hard-fails CI on any CRITICAL/HIGH not listed here.
+
+# FastMCP OAuth/OAuthProxy vulnerabilities, fixed only in fastmcp 3.x.
+# This server runs with NO authentication and does not use FastMCP's
+# OAuthProxy or any OAuth provider (server.py builds mcp.http_app with no auth),
+# so the vulnerable code paths are unreachable in this deployment.
+# We pin fastmcp>=2.14,<3; remediation is the fastmcp 3.x migration, tracked
+# separately (a major-version upgrade with breaking changes, out of scope for
+# this release). Re-evaluate and remove these once that migration lands.
+CVE-2026-32871
+CVE-2026-27124
