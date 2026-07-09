@@ -119,6 +119,7 @@ Implement after Epic 2 establishes richer exposure metadata, but before final br
 **Priority:** P0  
 **Lane:** Upstream PR  
 **Effort:** S/M  
+**Status:** ✅ Delivered (Phase 1) — parsed `cvss` object + `attack_vector`/`privileges_required`/`user_interaction`/`scope` filters; verified live against the June 2026 release.  
 **Primary touchpoints:** `models/vulnerability.py::Vulnerability`, `models/vulnerability.py::_parse_vulnerability`, `models/vulnerability.py::to_summary_dict`, `models/vulnerability.py::to_detail_dict`, `tools/search.py::msrc_search`, `tools/search.py::_search_impl`, `tools/search.py::_filter_vulnerabilities`.
 
 #### Functional Requirements
@@ -278,6 +279,7 @@ Implement after the core parameters stabilize so the template does not churn.
 **Priority:** P1  
 **Lane:** Upstream PR  
 **Effort:** S  
+**Status:** ✅ Delivered (Phase 1) — `references` block (MSRC, NVD, EPSS, and CISA KEV when listed); verified live against the June 2026 release.  
 **Primary touchpoints:** `models/vulnerability.py::Vulnerability.url`, `models/vulnerability.py::to_summary_dict`, `models/vulnerability.py::to_detail_dict`, `feeds/enrichment.py`.
 
 #### Functional Requirements
