@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **HTTP self-host hardening (Epic 9)** — the HTTP transport now supports a
+  configurable CORS allowlist (`MCP_CORS_ORIGINS`, comma-separated; defaults to
+  the permissive `*` for local dev) and trusted-proxy client-IP handling for
+  rate limiting (`MCP_TRUST_X_FORWARDED_FOR`, default `true`;
+  `MCP_TRUSTED_PROXIES`, comma-separated proxy allowlist). When directly exposed,
+  set `MCP_TRUST_X_FORWARDED_FOR=false` so a spoofed `X-Forwarded-For` header
+  cannot evade or poison the per-IP limiter; behind a proxy, list the proxy IPs
+  so the real client is resolved by unwinding trusted hops. README gains a
+  "Hardening a public HTTP deployment" section recommending an authenticated
+  front door, restricted CORS, and correct proxy trust. Rate limiting and body
+  size caps remain enabled by default, and `stdio` mode is entirely unaffected.
 - **Historical trend search (Epic 4)** — `msrc_search` now aggregates across a
   range of released months without adding a new tool: `months_back=N` searches
   the N most recent released months, or `start_month`/`end_month` define an

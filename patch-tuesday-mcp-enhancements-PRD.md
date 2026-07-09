@@ -337,6 +337,7 @@ Implement before trend search reaches larger ranges so cache behavior is visible
 
 **Priority:** P2  
 **Lane:** Upstream PR  
+**Status:** ✅ Delivered — configurable CORS allowlist (`MCP_CORS_ORIGINS`), trusted-proxy client-IP handling (`MCP_TRUST_X_FORWARDED_FOR` + `MCP_TRUSTED_PROXIES`) in the rate limiter, README "Hardening a public HTTP deployment" section (authenticated front door, restricted CORS, proxy trust). Rate-limit/body caps stay on by default; stdio unaffected.  
 **Effort:** S/M  
 **Primary touchpoints:** `server.py::main`, `middleware/rate_limit.py`, `middleware/body_limit.py`, README deployment docs, possibly new middleware for trusted proxy handling.
 

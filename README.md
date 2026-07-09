@@ -295,11 +295,39 @@ HTTP-mode environment variables:
 | `MCP_HOST` / `MCP_PORT` | `0.0.0.0` / `8000` | Bind address |
 | `RATE_LIMIT_RPM` | `60` | Per-IP requests/minute (`0` disables) |
 | `MCP_MAX_BODY_BYTES` | `262144` | Max request body size, returns 413 above it (`0` disables) |
+| `MCP_CORS_ORIGINS` | `*` (all) | Comma-separated allowlist of browser origins. **Set an explicit list for public deployments** (e.g. `https://app.example.com`) |
+| `MCP_TRUST_X_FORWARDED_FOR` | `true` | Whether to derive the client IP for rate limiting from the `X-Forwarded-For` header. Set to `false` when the server is **directly exposed** (no reverse proxy), so a spoofed header can't evade or poison the limiter |
+| `MCP_TRUSTED_PROXIES` | unset | Comma-separated proxy IPs. When set, `X-Forwarded-For` is only honored if the request arrives via one of these proxies, and the client is resolved as the right-most hop that is not itself a trusted proxy (unwinds chained proxies) |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | unset | Opt-in usage telemetry (requires `pip install patch-tuesday-mcp[telemetry]`) |
 
 HTTP mode also serves `GET /health` (liveness endpoint, exempt from rate
 limiting) and runs stateless, so it can scale to multiple replicas behind a
 load balancer without session affinity.
+
+### Hardening a public HTTP deployment
+
+The HTTP transport is **unauthenticated** — `msrc_search` only reads public
+vulnerability data, but an open endpoint is still abusable. Before exposing it
+to the internet:
+
+- **Put it behind an authenticated front door.** Terminate TLS and require auth
+  at a reverse proxy / API gateway (e.g. Azure API Management, an OAuth2/OIDC
+  proxy such as `oauth2-proxy`, Cloudflare Access, or your ingress controller's
+  auth). This server intentionally ships no built-in auth so you can layer your
+  organization's standard access control in front of it.
+- **Restrict CORS.** Set `MCP_CORS_ORIGINS` to the exact origins of your MCP
+  clients instead of the permissive `*` default.
+- **Set the proxy trust correctly.** When behind a reverse proxy, leave
+  `MCP_TRUST_X_FORWARDED_FOR=true` and set `MCP_TRUSTED_PROXIES` to your
+  proxy/ingress IP(s) so per-IP rate limiting keys on the real client. When the
+  container is reachable directly (no proxy), set
+  `MCP_TRUST_X_FORWARDED_FOR=false` so clients cannot forge the header.
+- **Keep the defaults on.** Leave `RATE_LIMIT_RPM` and `MCP_MAX_BODY_BYTES` at
+  their defaults (or tighten them) — they are your first line of defense against
+  floods and oversized payloads.
+
+Local `stdio` usage is unaffected by all of the above; none of this middleware
+runs for the default transport.
 
 The container runs on any host that can serve HTTP — Azure Container Apps, Cloud Run, Fly.io, or a plain VM.
 

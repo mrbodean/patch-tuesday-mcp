@@ -2,6 +2,42 @@
 
 ## Active Decisions
 
+### 2026-07-09 — Epic 9 (HTTP Self-Host Hardening) delivered
+Hardened the HTTP transport without touching stdio. CORS is now an allowlist via
+`MCP_CORS_ORIGINS` (comma-separated; default `*` preserved for local-dev
+backward compat, but README strongly steers public deploys to an explicit list).
+Client-IP resolution in `RateLimitMiddleware` is now configurable:
+`trust_x_forwarded_for` (env `MCP_TRUST_X_FORWARDED_FOR`, default true =
+previous behavior) and `trusted_proxies` (env `MCP_TRUSTED_PROXIES`). Resolution
+logic: trust off → direct peer only; trust on + no allowlist → right-most XFF
+hop (old behavior); trust on + allowlist → honor XFF only if the direct peer is
+a known proxy, then unwind trusted hops right-to-left to the real client. Added
+a README "Hardening a public HTTP deployment" section documenting the
+authenticated-front-door pattern (this server ships no built-in auth by design),
+restricted CORS, and correct proxy trust. Rate-limit + body caps stay on by
+default. Server helpers `_cors_origins`/`_trusted_proxies`/`_env_flag` are unit
+tested; middleware gains XFF-ignored / trusted-proxy-unwind / untrusted-peer
+tests. Branch `feat/epic-9-http-hardening`.
+
+### 2026-07-09 — Epic 1 (Product Profile / Watchlist) design: tool param + companion skill
+Decided (not yet implemented — after Epic 9) how Epic 1 should be built for AI-agent
+consumption. Split into two complementary layers rather than one:
+- **Deterministic filtering stays a `msrc_search` parameter**, not pure LLM/skill
+  reasoning. Set-membership matching over `affected_products`/`product_families`
+  must be code to satisfy AC1 (only matching vulns returned) and avoid hallucinated/
+  missed matches. Keeps the single-tool philosophy.
+- **Generic hook for upstream:** list-based `product_families=[...]` / `products=[...]`
+  filters (and/or a resolved `product_profile` name). Backward-compatible, additive.
+- **Named profiles + triage workflow become an agent Skill** (local): the skill file
+  stores watchlists (e.g. `identity-core = Windows Server, Exchange, Entra, Intune,
+  Defender, Azure, Edge`) and the triage procedure, and instructs the agent to expand
+  a profile into concrete family filters and call `msrc_search`. Adds NO new tool.
+- **Privacy:** watchlist contents live only in the local skill/config file; the agent
+  expands them into local filters; telemetry stays coarse (never logs filter values or
+  profile contents), satisfying FR4/AC3.
+Rationale: skills = procedural knowledge/orchestration; tools = deterministic capability.
+Filtering is set math (tool); "which families matter for identity triage" is judgment (skill).
+
 ### 2026-07-09 — Squad formed per PRD §8
 Team assembled around `patch-tuesday-mcp-enhancements-PRD.md`: Ada (Lead/Architect),
 Guido (Python/MCP Backend), Sentinel (Security Data/Vuln Domain), Verity (QA/Test),
