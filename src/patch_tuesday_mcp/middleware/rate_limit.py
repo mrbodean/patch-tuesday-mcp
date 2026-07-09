@@ -31,6 +31,8 @@ class RateLimitMiddleware:
             bucket capacity equals this value, refilled continuously.
         on_request: Optional callback invoked with (client IP, path) for each
             allowed request (used for telemetry).
+        on_throttled: Optional callback invoked with (client IP, path) for
+            each rejected (429) request, so throttling is observable.
         exempt_paths: Paths that bypass rate limiting and the on_request
             callback (health probes must not consume budget or be counted).
         trust_x_forwarded_for: When True, the ``X-Forwarded-For`` header may
@@ -55,6 +57,7 @@ class RateLimitMiddleware:
         app,
         requests_per_minute: int = 60,
         on_request=None,
+        on_throttled=None,
         exempt_paths: frozenset[str] = frozenset({"/health"}),
         trust_x_forwarded_for: bool = True,
         trusted_proxies: frozenset[str] = frozenset(),
@@ -62,6 +65,7 @@ class RateLimitMiddleware:
         self.app = app
         self.rpm = requests_per_minute
         self.on_request = on_request
+        self.on_throttled = on_throttled
         self.exempt_paths = exempt_paths
         self.trust_x_forwarded_for = trust_x_forwarded_for
         self.trusted_proxies = trusted_proxies
@@ -152,6 +156,8 @@ class RateLimitMiddleware:
 
         ip = self._client_ip(scope)
         if not self._allow(ip):
+            if self.on_throttled is not None:
+                self.on_throttled(ip, path)
             body = json.dumps({"error": "rate limit exceeded"}).encode()
             await send(
                 {

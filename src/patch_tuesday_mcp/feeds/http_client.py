@@ -36,6 +36,14 @@ def get_client() -> httpx.AsyncClient:
     return _client
 
 
+async def aclose() -> None:
+    """Close the shared client (called on HTTP server shutdown)."""
+    global _client
+    if _client is not None and not _client.is_closed:
+        await _client.aclose()
+    _client = None
+
+
 async def get_bounded(
     url: str,
     *,

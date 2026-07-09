@@ -19,21 +19,25 @@ class BodyLimitMiddleware:
     cleanly before the app starts processing.
     """
 
-    def __init__(self, app, max_bytes: int = DEFAULT_MAX_BODY_BYTES):
+    def __init__(self, app, max_bytes: int = DEFAULT_MAX_BODY_BYTES, on_rejected=None):
         self.app = app
         self.max_bytes = max_bytes
+        # Optional callback invoked with the request path on each 413, so
+        # rejections are observable in telemetry
+        self.on_rejected = on_rejected
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or self.max_bytes <= 0:
             await self.app(scope, receive, send)
             return
 
+        path = scope.get("path", "")
         declared = next(
             (v for k, v in scope.get("headers", []) if k.lower() == b"content-length"),
             b"",
         ).decode("latin-1")
         if declared.isdigit() and int(declared) > self.max_bytes:
-            await self._send_413(send)
+            await self._send_413(send, path)
             return
 
         # Buffer the request body (bounded by max_bytes) so the limit holds
@@ -47,7 +51,7 @@ class BodyLimitMiddleware:
                 break  # http.disconnect: hand through to the app
             received += len(message.get("body", b""))
             if received > self.max_bytes:
-                await self._send_413(send)
+                await self._send_413(send, path)
                 return
             if not message.get("more_body"):
                 break
@@ -59,7 +63,9 @@ class BodyLimitMiddleware:
 
         await self.app(scope, replay, send)
 
-    async def _send_413(self, send) -> None:
+    async def _send_413(self, send, path: str = "") -> None:
+        if self.on_rejected is not None:
+            self.on_rejected(path)
         body = json.dumps({"error": "request body too large"}).encode()
         await send(
             {

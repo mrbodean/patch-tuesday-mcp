@@ -258,6 +258,41 @@ async def test_full_month_cache_is_bounded(monkeypatch):
     )
 
 
+async def test_month_fetch_telemetry_includes_cache_hit(monkeypatch, mock_api):
+    """Cache hit-rate must be observable: fetch events carry a cache_hit flag."""
+    events = []
+    monkeypatch.setattr(
+        msrc_api.telemetry, "track_event", lambda name, props: events.append((name, props))
+    )
+    await fetch_month("2026-Jun")
+    await fetch_month("2026-Jun")
+    fetch_events = [p for n, p in events if n == "msrc_fetch"]
+    assert [e["cache_hit"] for e in fetch_events] == [False, True]
+
+
+async def test_month_cache_eviction_is_lru(monkeypatch):
+    """A recently *read* month must survive eviction over a stale write."""
+    monkeypatch.setattr(msrc_api, "MAX_FULL_MONTHS_CACHED", 2)
+
+    with open(FIXTURE, encoding="utf-8") as f:
+        cvrf_doc = json.load(f)
+
+    async def fake_get_json(url, timeout=60.0):
+        if url.endswith("/updates"):
+            return {"value": []}
+        return cvrf_doc
+
+    monkeypatch.setattr(msrc_api, "_get_json", fake_get_json)
+    await fetch_month("2026-Jan")
+    await fetch_month("2026-Feb")
+    await fetch_month("2026-Jan")  # cache hit refreshes recency
+    await fetch_month("2026-Mar")
+
+    assert set(msrc_api._month_cache) == {"2026-Jan", "2026-Mar"}, (
+        "eviction must target the least recently used month"
+    )
+
+
 async def test_concurrent_fetch_month_is_single_flight(monkeypatch):
     """Concurrent cold requests for the same month fetch the document once."""
     calls = []

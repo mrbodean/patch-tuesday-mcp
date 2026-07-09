@@ -182,6 +182,17 @@ async def test_on_request_callback_gets_client_ip_and_path():
     assert seen == [("9.9.9.9", "/mcp")], "exempt paths are not counted"
 
 
+async def test_on_throttled_callback_fires_on_429():
+    """Rejected requests must be observable, not invisible to telemetry."""
+    seen = []
+    mw = RateLimitMiddleware(
+        _ok_app, requests_per_minute=1, on_throttled=lambda ip, path: seen.append((ip, path))
+    )
+    assert await _call(mw, _http_scope(ip="9.9.9.9")) == 200
+    assert await _call(mw, _http_scope(ip="9.9.9.9")) == 429
+    assert seen == [("9.9.9.9", "/mcp")]
+
+
 # --- Body size limiting ---
 
 
@@ -202,6 +213,16 @@ async def test_body_limit_allows_small_bodies():
     scope = _http_scope()
     scope["headers"].append((b"content-length", b"4"))
     assert await _call(mw, scope, body_chunks=[b"ok!!"]) == 200
+
+
+async def test_body_limit_on_rejected_callback():
+    seen = []
+    mw = BodyLimitMiddleware(_ok_app, max_bytes=10, on_rejected=lambda path: seen.append(path))
+    scope = _http_scope()
+    scope["headers"].append((b"content-length", b"11"))
+    assert await _call(mw, scope) == 413
+    assert await _call(mw, _http_scope(), body_chunks=[b"x" * 8, b"y" * 8]) == 413
+    assert seen == ["/mcp", "/mcp"]
 
 
 async def test_body_limit_zero_disables():

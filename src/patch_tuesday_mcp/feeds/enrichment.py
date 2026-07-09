@@ -10,6 +10,7 @@ Enrichment is best-effort: fetch failures are logged and swallowed so the
 tool layer always gets a dict back (possibly empty), never an exception.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -17,6 +18,7 @@ import time
 
 import httpx
 
+from .. import telemetry
 from . import http_client
 
 EPSS_API_URL = "https://api.first.org/data/v1/epss"
@@ -29,8 +31,13 @@ KEV_CATALOG_URL = (
 MAX_RESPONSE_BYTES = int(os.getenv("MCP_ENRICHMENT_MAX_RESPONSE_BYTES", str(32 * 1024 * 1024)))
 
 EPSS_BATCH_SIZE = 100
+EPSS_FETCH_CONCURRENCY = 3  # bounded parallelism for multi-batch (trend) fetches
 EPSS_TTL_SECONDS = 24 * 3600  # EPSS scores update daily
 KEV_TTL_SECONDS = 6 * 3600
+
+# Every distinct CVE ever enriched leaves a cache entry (including negative-
+# cached misses); cap it so a long-lived process can't grow without bound.
+MAX_EPSS_CACHE_ENTRIES = 50_000
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +55,10 @@ def clear_cache() -> None:
     """Reset all caches (used by tests)."""
     _epss_cache.clear()
     _kev_cache.clear()
+
+
+def _elapsed_ms(start: float) -> float:
+    return round((time.perf_counter() - start) * 1000, 1)
 
 
 async def _get_json(url: str, timeout: float = 30.0) -> dict:
@@ -79,11 +90,20 @@ async def fetch_kev(force_refresh: bool = False) -> dict[str, dict]:
     if not force_refresh and _kev_cache and now - _kev_cache[0] < KEV_TTL_SECONDS:
         return _kev_cache[1]
 
+    start = time.perf_counter()
     try:
         data = await _get_json(KEV_CATALOG_URL, timeout=60.0)
     except EnrichmentError as exc:
         logger.warning("KEV catalog fetch failed: %s", exc)
+        telemetry.track_event(
+            "enrichment_fetch",
+            {"source": "kev", "ok": False, "duration_ms": _elapsed_ms(start)},
+        )
         return {}
+    telemetry.track_event(
+        "enrichment_fetch",
+        {"source": "kev", "ok": True, "duration_ms": _elapsed_ms(start)},
+    )
 
     catalog: dict[str, dict] = {}
     for entry in data.get("vulnerabilities", []):
@@ -126,30 +146,56 @@ async def fetch_epss(
         else:
             uncached.append(cve)
 
-    for start in range(0, len(uncached), EPSS_BATCH_SIZE):
-        batch = uncached[start : start + EPSS_BATCH_SIZE]
-        try:
-            data = await _get_json(f"{EPSS_API_URL}?cve={','.join(batch)}")
-        except EnrichmentError as exc:
-            logger.warning("EPSS fetch failed for batch of %d CVEs: %s", len(batch), exc)
-            continue
+    if uncached:
+        # Wide (trend) requests span many batches; fetch them with bounded
+        # concurrency instead of paying serial round-trips.
+        semaphore = asyncio.Semaphore(EPSS_FETCH_CONCURRENCY)
 
-        fetched: dict[str, tuple[float, float]] = {}
-        for entry in data.get("data", []):
-            cve = entry.get("cve")
-            try:
-                score = float(entry["epss"])
-                percentile = float(entry["percentile"])
-            except (KeyError, TypeError, ValueError):
+        async def fetch_batch(batch: list[str]) -> tuple[list[str], dict | None]:
+            async with semaphore:
+                batch_start = time.perf_counter()
+                try:
+                    data = await _get_json(f"{EPSS_API_URL}?cve={','.join(batch)}")
+                except EnrichmentError as exc:
+                    logger.warning("EPSS fetch failed for batch of %d CVEs: %s", len(batch), exc)
+                    telemetry.track_event(
+                        "enrichment_fetch",
+                        {"source": "epss", "ok": False, "duration_ms": _elapsed_ms(batch_start)},
+                    )
+                    return batch, None
+                telemetry.track_event(
+                    "enrichment_fetch",
+                    {"source": "epss", "ok": True, "duration_ms": _elapsed_ms(batch_start)},
+                )
+                return batch, data
+
+        batches = [
+            uncached[start : start + EPSS_BATCH_SIZE]
+            for start in range(0, len(uncached), EPSS_BATCH_SIZE)
+        ]
+        for batch, data in await asyncio.gather(*(fetch_batch(b) for b in batches)):
+            if data is None:
                 continue
-            if cve:
-                fetched[cve] = (score, percentile)
 
-        for cve in batch:
-            # Absent CVEs are cached as misses so repeat calls stay cache-only
-            _epss_cache[cve] = (now, fetched.get(cve))
-            if cve in fetched:
-                results[cve] = fetched[cve]
+            fetched: dict[str, tuple[float, float]] = {}
+            for entry in data.get("data", []):
+                cve = entry.get("cve")
+                try:
+                    score = float(entry["epss"])
+                    percentile = float(entry["percentile"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if cve:
+                    fetched[cve] = (score, percentile)
+
+            for cve in batch:
+                # Absent CVEs are cached as misses so repeat calls stay cache-only
+                _epss_cache[cve] = (now, fetched.get(cve))
+                if cve in fetched:
+                    results[cve] = fetched[cve]
+
+        while len(_epss_cache) > MAX_EPSS_CACHE_ENTRIES:
+            del _epss_cache[next(iter(_epss_cache))]
 
     return results
 

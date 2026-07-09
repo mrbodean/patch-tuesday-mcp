@@ -32,8 +32,10 @@ RECENT_MONTHS_WITH_TTL = 2
 # The MSRC index spans 125+ months, each a multi-MB document that parses to
 # even more; unbounded caches would OOM a small container if someone iterates
 # months. Full parses (with descriptions/FAQs) are the big ones; slim parses
-# are kept longer because chain walking scans up to 24 months.
-MAX_FULL_MONTHS_CACHED = 6
+# are kept longer because chain walking scans up to 24 months. The full cap
+# matches MAX_TREND_MONTHS (12) so a maximum trend query doesn't evict its own
+# earlier months mid-request (a cold 12-month trend measured ~77 MiB peak).
+MAX_FULL_MONTHS_CACHED = 12
 MAX_SLIM_MONTHS_CACHED = 40
 
 # Bound concurrent upstream fetch+parse work (each doc is multi-MB)
@@ -241,14 +243,20 @@ async def _cached_month(month_id: str, slim: bool, now: float) -> MonthlyRelease
         if cached:
             fetched_at, release = cached
             if not await _is_recent_month(month_id) or now - fetched_at < RECENT_MONTH_TTL_SECONDS:
+                # LRU: move the hit to the end of the dict's insertion order
+                # so eviction targets the least recently *used* month, while
+                # fetched_at stays intact for TTL freshness.
+                del cache[month_id]
+                cache[month_id] = cached
                 return release
     return None
 
 
 def _evict_oldest(cache: dict[str, tuple[float, MonthlyRelease]], max_entries: int) -> None:
+    # Dicts preserve insertion order and hits are re-inserted, so the first
+    # key is the least recently used entry.
     while len(cache) > max_entries:
-        oldest = min(cache, key=lambda k: cache[k][0])
-        del cache[oldest]
+        del cache[next(iter(cache))]
 
 
 async def fetch_month(
@@ -263,6 +271,9 @@ async def fetch_month(
     if not force_refresh:
         cached = await _cached_month(month_id, slim, time.monotonic())
         if cached is not None:
+            telemetry.track_event(
+                "msrc_fetch", {"month": month_id, "slim": slim, "cache_hit": True}
+            )
             return cached
 
     lock = _month_locks.setdefault(month_id, asyncio.Lock())
@@ -271,6 +282,9 @@ async def fetch_month(
         if not force_refresh:
             cached = await _cached_month(month_id, slim, time.monotonic())
             if cached is not None:
+                telemetry.track_event(
+                    "msrc_fetch", {"month": month_id, "slim": slim, "cache_hit": True}
+                )
                 return cached
 
         start = time.perf_counter()
@@ -282,6 +296,7 @@ async def fetch_month(
             {
                 "month": month_id,
                 "slim": slim,
+                "cache_hit": False,
                 "duration_ms": round((time.perf_counter() - start) * 1000, 1),
             },
         )

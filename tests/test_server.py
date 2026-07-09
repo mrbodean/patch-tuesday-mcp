@@ -1,5 +1,7 @@
 """Tests for server wiring: tool registration metadata and the health route."""
 
+import logging
+
 import httpx
 from fastmcp import Client
 
@@ -66,3 +68,61 @@ def test_env_flag_parsing(monkeypatch):
     for falsy in ("0", "false", "no", "off"):
         monkeypatch.setenv("MCP_TRUST_X_FORWARDED_FOR", falsy)
         assert server._env_flag("MCP_TRUST_X_FORWARDED_FOR", True) is False
+
+
+def test_uvicorn_limits_defaults(monkeypatch):
+    monkeypatch.delenv("MCP_LIMIT_CONCURRENCY", raising=False)
+    monkeypatch.delenv("MCP_TIMEOUT_KEEP_ALIVE", raising=False)
+    assert server._uvicorn_limits() == {"limit_concurrency": 40, "timeout_keep_alive": 15}
+
+
+def test_uvicorn_limits_env_overrides(monkeypatch):
+    monkeypatch.setenv("MCP_LIMIT_CONCURRENCY", "100")
+    monkeypatch.setenv("MCP_TIMEOUT_KEEP_ALIVE", "5")
+    assert server._uvicorn_limits() == {"limit_concurrency": 100, "timeout_keep_alive": 5}
+
+
+def test_uvicorn_limits_zero_disables_concurrency_cap(monkeypatch):
+    monkeypatch.setenv("MCP_LIMIT_CONCURRENCY", "0")
+    assert server._uvicorn_limits()["limit_concurrency"] is None
+
+
+def test_log_level_env(monkeypatch):
+    monkeypatch.delenv("MCP_LOG_LEVEL", raising=False)
+    assert server._log_level() == logging.WARNING
+    monkeypatch.setenv("MCP_LOG_LEVEL", "debug")
+    assert server._log_level() == logging.DEBUG
+    monkeypatch.setenv("MCP_LOG_LEVEL", "bogus")
+    assert server._log_level() == logging.WARNING
+
+
+async def test_lifespan_shutdown_closes_shared_client(monkeypatch):
+    closed = []
+
+    async def fake_aclose():
+        closed.append(True)
+
+    monkeypatch.setattr(server.http_client, "aclose", fake_aclose)
+
+    async def app(scope, receive, send):
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    wrapped = server._ClientCleanup(app)
+    messages = [{"type": "lifespan.startup"}, {"type": "lifespan.shutdown"}]
+    sent = []
+
+    async def receive():
+        return messages.pop(0)
+
+    async def send(message):
+        sent.append(message)
+
+    await wrapped({"type": "lifespan"}, receive, send)
+    assert closed == [True], "shared httpx client must be closed on shutdown"
+    assert {"type": "lifespan.shutdown.complete"} in sent
