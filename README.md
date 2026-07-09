@@ -27,6 +27,7 @@ Patch Tuesday MCP Server bridges Microsoft's official CVRF security update API a
 - **Export a triage briefing** - "Give me this month's Critical CVEs as a Markdown report" or "…as CSV" — a prioritized executive summary and table, or a spreadsheet-ready export (`format="markdown"` / `format="csv"`)
 - **Force-refresh & check data freshness** - "Re-pull this month's data fresh" (`force_refresh=True`) bypasses the in-process caches; `include_freshness=True` reports the cache age/TTL of the MSRC document and EPSS/KEV enrichment
 - **Prioritize patching** - Results are sorted most-urgent-first: KEV/exploited, then EPSS, then severity, then CVSS
+- **Kick off a guided monthly triage** - clients can select the built-in **monthly_triage** prompt to walk the full analyst workflow (zero-days → KEV → exploited → network/no-auth/no-UI criticals → identity-adjacent → endpoint → briefing), optionally scoped to a `product_profile`
 
 Perfect for security analysts, sysadmins, and IT professionals who triage Microsoft security updates every month — without clicking through the Security Update Guide portal.
 
@@ -154,6 +155,16 @@ Each entry may set `products` and/or `families` (case-insensitive partial matche
 ### Companion triage skill
 
 A portable [agent skill](skills/README.md) — `patch-tuesday-triage` — teaches an AI agent how to drive `msrc_search` through the monthly workflow (which searches to run, in what order, how to prioritize). It's plain Markdown and can be **deployed independently of this server**: copy `skills/patch-tuesday-triage/` into your agent's skills directory (e.g. `~/.copilot/skills/`). See [`skills/README.md`](skills/README.md) for deployment details.
+
+## Guided triage prompt
+
+The server registers an MCP **prompt** named `monthly_triage`. MCP clients that
+support prompts can select it to get a step-by-step analyst workflow built
+entirely on `msrc_search` — publicly disclosed zero-days, CISA KEV, exploited,
+network/no-auth/no-UI criticals, identity-adjacent products, endpoint/Intune,
+and a briefing. It accepts two optional arguments: `product_profile` (scope the
+whole workflow to a watchlist) and `month` (triage a specific release). No new
+tools are introduced — the prompt only orchestrates `msrc_search` calls.
 
 ## Prompt Examples
 

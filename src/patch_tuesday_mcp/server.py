@@ -11,6 +11,7 @@ logging.getLogger("fastmcp").setLevel(logging.WARNING)
 from . import __version__, telemetry  # noqa: E402
 from .middleware.body_limit import DEFAULT_MAX_BODY_BYTES, BodyLimitMiddleware  # noqa: E402
 from .middleware.rate_limit import RateLimitMiddleware  # noqa: E402
+from .tools.prompts import monthly_triage  # noqa: E402
 from .tools.search import msrc_search  # noqa: E402
 
 
@@ -72,6 +73,20 @@ mcp.tool(
         "idempotentHint": True,
         "openWorldHint": True,
     },
+)
+
+# Register the monthly triage prompt template. It guides clients through the
+# analyst workflow using the single msrc_search tool (no new tools).
+mcp.prompt(
+    monthly_triage,
+    name="monthly_triage",
+    title="Monthly Patch Tuesday Triage",
+    description=(
+        "Guided monthly identity/security triage using msrc_search: zero-days, "
+        "CISA KEV, exploited, network/no-auth/no-UI criticals, identity-adjacent "
+        "products, endpoint/Intune, and a briefing. Optionally scope to a product "
+        "watchlist via product_profile."
+    ),
 )
 
 
