@@ -339,6 +339,44 @@ async def test_invalid_report_rejected():
     assert result["error_kind"] == "invalid_input"
 
 
+# --- Cache controls + freshness (Epic 8) ---
+
+
+async def test_include_freshness_adds_metadata_block():
+    result = await msrc_search(include_freshness=True)
+    assert "freshness" in result
+    fresh = result["freshness"]
+    assert fresh["msrc"]["month"] == "2026-Jun"
+    assert fresh["msrc"]["available"] is True
+    assert "ttl_seconds" in fresh["epss"]
+    assert "ttl_seconds" in fresh["kev"]
+
+
+async def test_no_freshness_by_default():
+    result = await msrc_search()
+    assert "freshness" not in result
+
+
+async def test_force_refresh_implies_freshness_and_refetches(monkeypatch):
+    from patch_tuesday_mcp.feeds import msrc_api as api
+
+    calls = []
+    original = api.fetch_month
+
+    async def counting_fetch(month_id, slim=False, force_refresh=False):
+        calls.append((month_id, force_refresh))
+        return await original(month_id, slim=slim, force_refresh=force_refresh)
+
+    monkeypatch.setattr(search_module.msrc_api, "fetch_month", counting_fetch)
+
+    await msrc_search()  # warm the cache
+    result = await msrc_search(force_refresh=True)
+
+    assert result["freshness"]["force_refresh"] is True
+    assert result["filters_applied"].get("force_refresh") is True
+    assert calls[-1] == ("2026-Jun", True), "force_refresh must reach fetch_month"
+
+
 async def test_month_normalization_and_invalid():
     result = await msrc_search(month="2026-06")
     assert result["month"] == "2026-Jun"

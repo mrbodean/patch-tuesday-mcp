@@ -65,6 +65,8 @@ async def msrc_search(
     include_guidance: bool = False,
     format: str = "json",
     report: str | None = None,
+    force_refresh: bool = False,
+    include_freshness: bool = False,
     limit: Annotated[int, Field(ge=0, le=MAX_LIMIT)] = 10,
     offset: Annotated[int, Field(ge=0)] = 0,
     include_stats: bool = False,
@@ -158,6 +160,14 @@ async def msrc_search(
         report: Optional report profile for format="markdown"/"csv". Currently
             only "triage" (the default rendering) is supported; reserved for
             future report shapes.
+        force_refresh: When True, bypass the in-process caches for this request
+            and re-fetch the MSRC document and EPSS/KEV enrichment from source.
+            Use to pick up a same-day MSRC revision or fresh EPSS/KEV data.
+            Only the data needed for this request is refreshed; unrelated cached
+            months are left intact.
+        include_freshness: When True (or when force_refresh is used), add a
+            freshness block to the response reporting the cache age and TTL of
+            the MSRC document and the EPSS/KEV enrichment data.
         limit: Maximum number of results to return (default: 10, max: 100).
             Set to 0 with include_stats=True for a stats-only month overview.
         offset: Number of results to skip for pagination (default: 0).
@@ -182,6 +192,8 @@ async def msrc_search(
         - format / markdown / csv / columns: (only when format="markdown" or
           "csv") the chosen format plus the rendered triage view; csv also
           carries the stable column-name list
+        - freshness: (only with include_freshness=True or force_refresh=True)
+          cache age/TTL for the MSRC document and EPSS/KEV enrichment
         - error / error_kind: (only on failure) a message plus a category
           (invalid_input, not_found, upstream)
         - note: (when relevant) explains month selection, e.g. that a newer
@@ -210,6 +222,8 @@ async def msrc_search(
         include_guidance=include_guidance,
         format=format,
         report=report,
+        force_refresh=force_refresh,
+        include_freshness=include_freshness,
         limit=limit,
         offset=offset,
         include_stats=include_stats,
@@ -244,17 +258,19 @@ async def _search_impl(
     include_guidance: bool,
     format: str,
     report: str | None,
+    force_refresh: bool,
+    include_freshness: bool,
     limit: int,
     offset: int,
     include_stats: bool,
 ) -> dict:
     # --- CVE fast path: cross-month single-CVE detail lookup ---
     if cve:
-        return await _lookup_cve(cve, include_guidance)
+        return await _lookup_cve(cve, include_guidance, force_refresh)
 
     # --- KB fast path: which CVEs does this KB fix ---
     if kb:
-        return await _lookup_kb(kb, include_chain, month, limit, offset)
+        return await _lookup_kb(kb, include_chain, month, limit, offset, force_refresh)
 
     filters_applied = _build_filters_summary(
         query=query,
@@ -272,6 +288,7 @@ async def _search_impl(
         scope=scope,
         format=format if format != "json" else None,
         report=report,
+        force_refresh=force_refresh if force_refresh else None,
         offset=offset,
     )
 
@@ -326,8 +343,10 @@ async def _search_impl(
     skipped_pre_release: str | None = None
     try:
         if month_id is None:
-            month_id, skipped_pre_release = await msrc_api.get_default_month_id()
-        release = await msrc_api.fetch_month(month_id)
+            month_id, skipped_pre_release = await msrc_api.get_default_month_id(
+                force_refresh=force_refresh
+            )
+        release = await msrc_api.fetch_month(month_id, force_refresh=force_refresh)
     except MsrcApiError as exc:
         if "not found" in str(exc):
             return _error(
@@ -339,7 +358,7 @@ async def _search_impl(
 
     # Enrich the whole month (not just the returned page) so KEV/EPSS
     # filtering and sorting stay consistent across pagination
-    await _enrich(release.vulnerabilities)
+    await _enrich(release.vulnerabilities, force_refresh=force_refresh)
 
     matched = _filter_vulnerabilities(
         release.vulnerabilities,
@@ -381,6 +400,15 @@ async def _search_impl(
             response["csv"] = formatters.render_csv(page)
             response["columns"] = list(formatters.TRIAGE_COLUMNS)
 
+    if include_freshness or force_refresh:
+        response["freshness"] = {
+            "msrc": await msrc_api.month_freshness(month_id),
+            "epss": enrichment.epss_freshness([v.cve for v in matched]),
+            "kev": enrichment.kev_freshness(),
+        }
+        if force_refresh:
+            response["freshness"]["force_refresh"] = True
+
     if skipped_pre_release:
         release_time = msrc_api.patch_tuesday_utc(skipped_pre_release)
         response["note"] = (
@@ -402,12 +430,12 @@ async def _search_impl(
     return response
 
 
-async def _enrich(vulnerabilities: list[Vulnerability]) -> None:
+async def _enrich(vulnerabilities: list[Vulnerability], force_refresh: bool = False) -> None:
     """Attach KEV and EPSS data in place. Best-effort: fetch failures leave
     the enrichment fields unset and never raise."""
     kev_map, epss_map = await asyncio.gather(
-        enrichment.fetch_kev(),
-        enrichment.fetch_epss([v.cve for v in vulnerabilities]),
+        enrichment.fetch_kev(force_refresh=force_refresh),
+        enrichment.fetch_epss([v.cve for v in vulnerabilities], force_refresh=force_refresh),
     )
     for v in vulnerabilities:
         kev_entry = kev_map.get(v.cve)
@@ -418,11 +446,15 @@ async def _enrich(vulnerabilities: list[Vulnerability]) -> None:
             v.epss_score, v.epss_percentile = scores
 
 
-async def _lookup_cve(cve: str, include_guidance: bool = False) -> dict:
+async def _lookup_cve(
+    cve: str, include_guidance: bool = False, force_refresh: bool = False
+) -> dict:
     cve = cve.strip().upper()
     filters_applied: dict = {"cve": cve}
     if include_guidance:
         filters_applied["include_guidance"] = True
+    if force_refresh:
+        filters_applied["force_refresh"] = True
     if not _CVE_RE.match(cve):
         return _error(
             f"Invalid CVE format: {cve!r}. Expected e.g. 'CVE-2026-41108'.",
@@ -437,7 +469,7 @@ async def _lookup_cve(cve: str, include_guidance: bool = False) -> dict:
                 filters_applied,
                 kind="not_found",
             )
-        release = await msrc_api.fetch_month(month_id)
+        release = await msrc_api.fetch_month(month_id, force_refresh=force_refresh)
     except MsrcApiError as exc:
         return _error(str(exc), filters_applied, kind="upstream")
 
@@ -449,7 +481,7 @@ async def _lookup_cve(cve: str, include_guidance: bool = False) -> dict:
             kind="not_found",
         )
 
-    await _enrich([vuln])
+    await _enrich([vuln], force_refresh=force_refresh)
 
     return {
         **_release_header(release),
@@ -465,6 +497,7 @@ async def _lookup_kb(
     month: str | None = None,
     limit: int = 10,
     offset: int = 0,
+    force_refresh: bool = False,
 ) -> dict:
     kb_number = kb.strip().upper().removeprefix("KB").strip()
     filters_applied = {"kb": f"KB{kb_number}"}
@@ -472,6 +505,8 @@ async def _lookup_kb(
         filters_applied["month"] = month
     if include_chain:
         filters_applied["include_chain"] = True
+    if force_refresh:
+        filters_applied["force_refresh"] = True
     if not kb_number.isdigit():
         return _error(
             f"Invalid KB number: {kb!r}. Expected e.g. '5094123' or 'KB5094123'.",
@@ -488,7 +523,7 @@ async def _lookup_kb(
     offset = max(0, offset)
 
     try:
-        entries = await msrc_api.fetch_update_index()
+        entries = await msrc_api.fetch_update_index(force_refresh=force_refresh)
     except MsrcApiError as exc:
         return _error(str(exc), filters_applied, kind="upstream")
 
@@ -505,14 +540,14 @@ async def _lookup_kb(
 
     for entry in candidates:
         try:
-            release = await msrc_api.fetch_month(entry["id"])
+            release = await msrc_api.fetch_month(entry["id"], force_refresh=force_refresh)
         except MsrcApiError:
             continue
         matched = [
             v for v in release.vulnerabilities if any(k.kb == kb_number for k in v.kb_articles)
         ]
         if matched:
-            await _enrich(matched)
+            await _enrich(matched, force_refresh=force_refresh)
             matched = sort_vulnerabilities(matched)
             response = {
                 **_release_header(release),
