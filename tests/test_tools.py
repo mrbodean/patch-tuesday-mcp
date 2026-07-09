@@ -670,6 +670,74 @@ async def test_chain_predecessor_not_found(monkeypatch):
     ]
 
 
+async def test_chain_walk_reports_fetch_failures(monkeypatch):
+    """A predecessor scan that hit upstream errors must not claim a definitive
+    'not found' — the chain note has to say documents could not be fetched."""
+    jun_doc = _synthetic_month("2026-Jun", "2026-12-09T07:00:00Z", [("5300003", "5300002")])
+    index = {
+        "value": [
+            {
+                "ID": "2026-Jun",
+                "DocumentTitle": "2026-Jun Security Updates",
+                "InitialReleaseDate": "2026-12-09T07:00:00Z",
+                "CurrentReleaseDate": "2026-12-09T07:00:00Z",
+            },
+            {
+                "ID": "2026-May",
+                "DocumentTitle": "2026-May Security Updates",
+                "InitialReleaseDate": "2026-11-09T07:00:00Z",
+                "CurrentReleaseDate": "2026-11-09T07:00:00Z",
+            },
+        ]
+    }
+
+    async def fake_get_json(url, timeout=60.0):
+        if url.endswith("/updates"):
+            return index
+        if url.endswith("/cvrf/2026-Jun"):
+            return jun_doc
+        raise MsrcApiError("MSRC API returned HTTP 500")
+
+    monkeypatch.setattr(msrc_api, "_get_json", fake_get_json)
+    clear_cache()
+
+    result = await msrc_search(kb="5300003", include_chain=True)
+    assert "error" not in result
+    assert result["chain_complete"] is False
+    assert "could not be fetched" in result["chain_note"]
+
+
+async def test_kb_scan_upstream_failure_reported_as_upstream(monkeypatch):
+    """An upstream outage during the KB month scan must not masquerade as
+    'KB not found'."""
+
+    async def fake_get_json(url, timeout=60.0):
+        if url.endswith("/updates"):
+            return INDEX_RESPONSE
+        raise MsrcApiError("MSRC API returned HTTP 503")
+
+    monkeypatch.setattr(msrc_api, "_get_json", fake_get_json)
+    clear_cache()
+
+    result = await msrc_search(kb="5094123")
+    assert result["error_kind"] == "upstream"
+    assert "could not be fetched" in result["error"]
+
+
+async def test_unexpected_exception_returns_internal_error(monkeypatch):
+    """Non-MsrcApiError exceptions must become a structured internal error,
+    not a raw exception leaking internals to the MCP client."""
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("secret internal detail")
+
+    monkeypatch.setattr(msrc_api, "fetch_month", boom)
+    result = await msrc_search()
+    assert result["error_kind"] == "internal"
+    assert result["total_found"] == 0
+    assert "secret internal detail" not in result["error"]
+
+
 async def test_chain_multiple_predecessors(monkeypatch):
     _patch_chain_months(
         monkeypatch,

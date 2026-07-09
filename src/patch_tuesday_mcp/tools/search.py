@@ -1,6 +1,7 @@
 """Unified search tool for querying MSRC security updates (Patch Tuesday)."""
 
 import asyncio
+import logging
 import re
 import time
 from typing import Annotated
@@ -18,6 +19,8 @@ from ..models.vulnerability import (
     sort_vulnerabilities,
 )
 from . import formatters
+
+logger = logging.getLogger(__name__)
 
 _CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
 
@@ -224,35 +227,48 @@ async def msrc_search(
           not had its Patch Tuesday yet
     """
     start = time.perf_counter()
-    result = await _search_impl(
-        query=query,
-        cve=cve,
-        kb=kb,
-        month=month,
-        product=product,
-        severity=severity,
-        exploited=exploited,
-        publicly_disclosed=publicly_disclosed,
-        kev=kev,
-        min_epss=min_epss,
-        min_cvss=min_cvss,
-        attack_vector=attack_vector,
-        privileges_required=privileges_required,
-        user_interaction=user_interaction,
-        scope=scope,
-        include_chain=include_chain,
-        include_guidance=include_guidance,
-        format=format,
-        report=report,
-        force_refresh=force_refresh,
-        include_freshness=include_freshness,
-        months_back=months_back,
-        start_month=start_month,
-        end_month=end_month,
-        limit=limit,
-        offset=offset,
-        include_stats=include_stats,
-    )
+    try:
+        result = await _search_impl(
+            query=query,
+            cve=cve,
+            kb=kb,
+            month=month,
+            product=product,
+            severity=severity,
+            exploited=exploited,
+            publicly_disclosed=publicly_disclosed,
+            kev=kev,
+            min_epss=min_epss,
+            min_cvss=min_cvss,
+            attack_vector=attack_vector,
+            privileges_required=privileges_required,
+            user_interaction=user_interaction,
+            scope=scope,
+            include_chain=include_chain,
+            include_guidance=include_guidance,
+            format=format,
+            report=report,
+            force_refresh=force_refresh,
+            include_freshness=include_freshness,
+            months_back=months_back,
+            start_month=start_month,
+            end_month=end_month,
+            limit=limit,
+            offset=offset,
+            include_stats=include_stats,
+        )
+    except Exception:
+        # Contract: msrc_search never raises. Anything _search_impl did not
+        # convert itself (unexpected CVRF shapes, plumbing bugs) is logged
+        # server-side and reported generically so internals don't leak.
+        logger.exception("msrc_search failed unexpectedly")
+        result = {
+            "total_found": 0,
+            "vulnerabilities": [],
+            "filters_applied": {},
+            "error": "The search failed due to an unexpected internal error.",
+            "error_kind": "internal",
+        }
     telemetry.track_tool_call(
         "msrc_search",
         result.get("filters_applied", {}),
@@ -782,10 +798,16 @@ async def _lookup_kb(
     else:
         candidates = entries[:KB_SCAN_MONTHS]
 
+    scan_failures = 0
     for entry in candidates:
         try:
             release = await msrc_api.fetch_month(entry["id"], force_refresh=force_refresh)
-        except MsrcApiError:
+        except MsrcApiError as exc:
+            # A missing month document is a real "not there"; anything else
+            # (5xx, timeout) means the scan was incomplete and must not be
+            # reported as a definitive not-found.
+            if "not found" not in str(exc):
+                scan_failures += 1
             continue
         matched = [
             v for v in release.vulnerabilities if any(k.kb == kb_number for k in v.kb_articles)
@@ -804,6 +826,13 @@ async def _lookup_kb(
             return response
 
     where = month_id if month_id else f"the last {KB_SCAN_MONTHS} monthly releases"
+    if scan_failures:
+        return _error(
+            f"KB{kb_number} was not found in {where}, but {scan_failures} monthly "
+            "document(s) could not be fetched, so the scan was incomplete. Retry later.",
+            filters_applied,
+            kind="upstream",
+        )
     return _error(
         f"KB{kb_number} was not found in {where}.",
         filters_applied,
@@ -830,16 +859,23 @@ def _collect_predecessors(kb_number: str, release: MonthlyRelease) -> dict[str, 
     return counts
 
 
-async def _find_kb_month(kb_number: str, months: list[dict]) -> MonthlyRelease | None:
-    """Scan monthly docs (slim parse) for the first one containing a KB."""
+async def _find_kb_month(kb_number: str, months: list[dict]) -> tuple[MonthlyRelease | None, int]:
+    """Scan monthly docs (slim parse) for the first one containing a KB.
+
+    Returns (release_or_None, fetch_failure_count) so callers can distinguish
+    "definitively not there" from "the scan itself was incomplete".
+    """
+    failures = 0
     for entry in months:
         try:
             release = await msrc_api.fetch_month(entry["id"], slim=True)
-        except MsrcApiError:
+        except MsrcApiError as exc:
+            if "not found" not in str(exc):
+                failures += 1
             continue
         if any(k.kb == kb_number for v in release.vulnerabilities for k in v.kb_articles):
-            return release
-    return None
+            return release, failures
+    return None, failures
 
 
 async def _walk_chain(kb_number: str, release: MonthlyRelease, entries: list[dict]) -> dict:
@@ -884,12 +920,20 @@ async def _walk_chain(kb_number: str, release: MonthlyRelease, entries: list[dic
 
         # Predecessors are older, so scan from the current month backward
         # (same month included: out-of-band updates can supersede within it)
-        predecessor_release = await _find_kb_month(target, window[pos:])
+        predecessor_release, fetch_failures = await _find_kb_month(target, window[pos:])
         if predecessor_release is None:
-            note = (
-                f"Stopped: KB{target} was not found within the "
-                f"{CHAIN_SCAN_MONTHS}-month scan window."
-            )
+            if fetch_failures:
+                note = (
+                    f"Stopped: KB{target} was not found within the "
+                    f"{CHAIN_SCAN_MONTHS}-month scan window, but {fetch_failures} "
+                    "monthly document(s) could not be fetched; the chain may be "
+                    "incomplete."
+                )
+            else:
+                note = (
+                    f"Stopped: KB{target} was not found within the "
+                    f"{CHAIN_SCAN_MONTHS}-month scan window."
+                )
             break
         current_kb = target
         current_release = predecessor_release

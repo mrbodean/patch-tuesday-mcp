@@ -82,6 +82,30 @@ async def test_spoofed_forwarded_for_cannot_evade_limit():
     assert await _call(mw, scope) == 429
 
 
+async def test_public_peer_xff_ignored_without_proxy_allowlist():
+    """A publicly-routable direct peer fully controls the XFF header, so
+    without a proxy allowlist it must be ignored — otherwise rotating forged
+    values would mint a fresh bucket per request (rate-limit bypass)."""
+    mw = RateLimitMiddleware(_ok_app, requests_per_minute=2)
+    # NB: a genuinely global peer IP — documentation ranges (203.0.113.0/24)
+    # count as private/non-global to ipaddress and would be trusted.
+    for i in range(2):
+        assert await _call(mw, _http_scope(ip="93.184.216.34", forwarded=f"1.2.3.{i}")) == 200
+    assert await _call(mw, _http_scope(ip="93.184.216.34", forwarded="1.2.3.99")) == 429
+
+
+async def test_unknown_peer_xff_ignored():
+    """A request with no client info in the scope must never honor XFF."""
+    mw = RateLimitMiddleware(_ok_app, requests_per_minute=2)
+    for i in range(2):
+        scope = _http_scope(forwarded=f"1.2.3.{i}")
+        scope["client"] = None
+        assert await _call(mw, scope) == 200
+    scope = _http_scope(forwarded="1.2.3.99")
+    scope["client"] = None
+    assert await _call(mw, scope) == 429
+
+
 async def test_xff_ignored_when_not_trusted():
     """With trust disabled, only the direct peer IP keys the bucket."""
     mw = RateLimitMiddleware(_ok_app, requests_per_minute=2, trust_x_forwarded_for=False)

@@ -150,7 +150,8 @@ def main():
             proxy_display = (
                 f"via proxies {', '.join(sorted(trusted_proxies))}"
                 if trusted_proxies
-                else "rightmost hop"
+                else "rightmost hop (private/loopback peers only; set "
+                "MCP_TRUSTED_PROXIES to pin your ingress)"
             )
             print(f"Trusting X-Forwarded-For: {proxy_display}")
         else:

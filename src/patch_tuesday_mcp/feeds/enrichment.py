@@ -10,7 +10,9 @@ Enrichment is best-effort: fetch failures are logged and swallowed so the
 tool layer always gets a dict back (possibly empty), never an exception.
 """
 
+import json
 import logging
+import os
 import time
 
 import httpx
@@ -21,6 +23,10 @@ EPSS_API_URL = "https://api.first.org/data/v1/epss"
 KEV_CATALOG_URL = (
     "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 )
+
+# Cap on a single upstream response body. The KEV catalog is a few MiB and
+# EPSS batches are small; well beyond that means a misbehaving upstream.
+MAX_RESPONSE_BYTES = int(os.getenv("MCP_ENRICHMENT_MAX_RESPONSE_BYTES", str(32 * 1024 * 1024)))
 
 EPSS_BATCH_SIZE = 100
 EPSS_TTL_SECONDS = 24 * 3600  # EPSS scores update daily
@@ -48,16 +54,17 @@ async def _get_json(url: str, timeout: float = 30.0) -> dict:
     """GET a URL and return parsed JSON, raising EnrichmentError on failure."""
     headers = {"Accept": "application/json"}
     try:
-        client = http_client.get_client()
-        response = await client.get(url, headers=headers, timeout=timeout)
+        status, body = await http_client.get_bounded(
+            url, headers=headers, timeout=timeout, max_bytes=MAX_RESPONSE_BYTES
+        )
     except httpx.HTTPError as exc:
         raise EnrichmentError(f"Enrichment request failed: {exc}") from exc
 
-    if response.status_code != 200:
-        raise EnrichmentError(f"Enrichment API returned HTTP {response.status_code}")
+    if status != 200:
+        raise EnrichmentError(f"Enrichment API returned HTTP {status}")
 
     try:
-        return response.json()
+        return json.loads(body)
     except ValueError as exc:
         raise EnrichmentError("Enrichment API returned invalid JSON") from exc
 

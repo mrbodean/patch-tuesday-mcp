@@ -5,6 +5,8 @@ https://github.com/microsoft/MSRC-Microsoft-Security-Updates-API
 """
 
 import asyncio
+import json
+import os
 import time
 from datetime import datetime, timezone
 
@@ -15,6 +17,11 @@ from ..models.vulnerability import MonthlyRelease, parse_cvrf, parse_release_dat
 from . import http_client
 
 MSRC_API_BASE = "https://api.msrc.microsoft.com/cvrf/v3.0"
+
+# Cap on a single upstream response body. Monthly CVRF docs run ~10-20 MiB;
+# anything far beyond that would exhaust the 0.5 GiB container, so reads are
+# bounded while streaming instead of buffered whole.
+MAX_RESPONSE_BYTES = int(os.getenv("MCP_MSRC_MAX_RESPONSE_BYTES", str(64 * 1024 * 1024)))
 
 # Monthly docs can receive revisions; refresh recent months hourly. Older
 # months change rarely and are cached until evicted.
@@ -166,18 +173,19 @@ async def _get_json(url: str, timeout: float = 60.0) -> dict:
     """GET a URL and return parsed JSON, raising MsrcApiError on failure."""
     headers = {"Accept": "application/json"}
     try:
-        client = http_client.get_client()
-        response = await client.get(url, headers=headers, timeout=timeout)
+        status, body = await http_client.get_bounded(
+            url, headers=headers, timeout=timeout, max_bytes=MAX_RESPONSE_BYTES
+        )
     except httpx.HTTPError as exc:
         raise MsrcApiError(f"MSRC API request failed: {exc}") from exc
 
-    if response.status_code == 404:
+    if status == 404:
         raise MsrcApiError("not found")
-    if response.status_code != 200:
-        raise MsrcApiError(f"MSRC API returned HTTP {response.status_code}")
+    if status != 200:
+        raise MsrcApiError(f"MSRC API returned HTTP {status}")
 
     try:
-        return response.json()
+        return json.loads(body)
     except ValueError as exc:
         raise MsrcApiError("MSRC API returned invalid JSON") from exc
 
