@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Historical trend search (Epic 4)** — `msrc_search` now aggregates across a
+  range of released months without adding a new tool: `months_back=N` searches
+  the N most recent released months, or `start_month`/`end_month` define an
+  inclusive range. The response carries a `range`, `months_searched`, an
+  aggregated `total_found`/`vulnerabilities`, and a per-month `trend` (total,
+  by-severity, exploited, publicly_disclosed, KEV counts). All existing filters
+  (query, product, severity, exploited, publicly_disclosed, KEV, EPSS, CVSS, and
+  CVSS-vector fields) apply across the range, and `format`/`include_stats`/
+  `include_freshness`/`force_refresh` work in trend mode too. Ranges are capped
+  at 12 months (an over-cap request returns an `invalid_input` error) and reuse
+  the existing MSRC cache and fetch-concurrency controls. Default single-month
+  behavior is unchanged when no range parameter is supplied.
 - **Cache controls & enrichment freshness (Epic 8)** — `msrc_search` now accepts
   `force_refresh=True` to bypass the in-process caches for a request and re-fetch
   the MSRC document, EPSS scores, and CISA KEV catalog from source (only the data

@@ -26,6 +26,20 @@ CVSS vector breakdown and generated reference links shipped on branch
 to parse a vector (MSRC always provides one) so v2/v4/ambiguous inputs fail open
 to `None`; malformed individual metrics are dropped, never raised. CVSS exposure
 and references are opt-in for summaries to keep broad results lean.
+### 2026-07-09 — Epic 4 (Historical Trend Search) delivered
+Added `months_back` / `start_month` / `end_month` to `msrc_search`, routed to a
+new `_trend_search` helper. Trend mode aggregates matches across *released*
+months (pre-Patch-Tuesday months excluded via `patch_tuesday_utc <= now`),
+returns `range` + `months_searched` + per-month `trend` (compact compute_stats:
+total, by_severity, exploited, publicly_disclosed, kev), and a combined
+sorted/paginated `vulnerabilities` list. All existing filters + vector filters
+apply; `format`/`include_stats`/`freshness`/`force_refresh` supported in trend
+mode (freshness.msrc is a per-month list). 12-month cap → invalid_input;
+`months_back` and start/end are mutually exclusive; months fetched via
+`asyncio.gather` over the existing cache + FETCH_CONCURRENCY semaphore. Response
+shape is distinct from single-month (range/trend vs month) so default behavior
+is unchanged. Verified live (9 smoke tests). Branch `feat/epic-4-trend-search`.
+
 ### 2026-07-09 — Epic 8 (Cache Controls + Enrichment Freshness) delivered
 Added `force_refresh` (bypass in-process MSRC/EPSS/KEV caches for the request,
 re-fetch from source; unrelated cached months untouched) and `include_freshness`

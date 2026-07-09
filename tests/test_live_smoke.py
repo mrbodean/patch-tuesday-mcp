@@ -134,3 +134,21 @@ async def test_live_force_refresh_and_freshness_metadata():
     assert "freshness" not in default
 
 
+async def test_live_trend_search_across_recent_months():
+    result = await msrc_search(months_back=3, limit=50)
+    assert "error" not in result, result.get("error")
+    assert "month" not in result, "trend responses use a range, not a single month"
+    assert 1 <= result["months_searched"] <= 3
+    assert result["range"]["months"], "expected a resolved month list"
+    assert len(result["trend"]) == result["months_searched"]
+    # total_found is the sum of matches across the returned per-month counts.
+    assert result["total_found"] == sum(entry["total"] for entry in result["trend"])
+    # Trend is newest-first: the first entry matches the range end.
+    assert result["trend"][0]["month"] == result["range"]["end"]
+
+    # Range cap is enforced.
+    capped = await msrc_search(months_back=99)
+    assert capped["error_kind"] == "invalid_input"
+
+
+
