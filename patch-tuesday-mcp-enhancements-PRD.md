@@ -183,6 +183,7 @@ Implement after Epic 2 or in parallel if a second engineer is available. It touc
 
 ### Epic 4 — Historical Trend Search
 
+**Status:** ✅ Delivered (Phase 2 follow-on) — `months_back` / `start_month` / `end_month` aggregate matching CVEs across released months with a per-month `trend` block; all existing filters apply across the range; 12-month cap returns `invalid_input`; reuses MSRC cache + `FETCH_CONCURRENCY`; default single-month behavior unchanged.  
 **Priority:** P1  
 **Lane:** Upstream PR  
 **Effort:** M/L  
