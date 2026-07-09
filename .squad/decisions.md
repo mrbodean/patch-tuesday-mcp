@@ -15,6 +15,18 @@ backward-compatible parameters to the single `msrc_search` tool — never new to
 Organization-specific product profiles/watchlists stay local and never go upstream
 or into telemetry.
 
+### 2026-07-09 — Epics tracked as GitHub issues #1–#9
+The nine PRD epics are filed as issues in the fork (Epic N = issue #N) with
+priority/lane labels and squad-member assignment labels. Upstream PRs will be
+split out per epic when ready; internal PRs land against the fork's `main` first.
+
+### 2026-07-09 — Phase 1 delivered (Epic 2 + Epic 7), PR #10
+CVSS vector breakdown and generated reference links shipped on branch
+`feat/phase-1-cvss-references`. Decision: require an explicit `CVSS:3.x` prefix
+to parse a vector (MSRC always provides one) so v2/v4/ambiguous inputs fail open
+to `None`; malformed individual metrics are dropped, never raised. CVSS exposure
+and references are opt-in for summaries to keep broad results lean.
+
 ## Governance
 
 - All meaningful changes require team consensus
