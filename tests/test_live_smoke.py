@@ -90,3 +90,28 @@ async def test_live_include_guidance_shape():
     for entry in detail.get("guidance", []):
         assert entry["type"] in {"mitigation", "workaround", "will_not_fix"}
         assert entry["description"]
+
+
+async def test_live_markdown_and_csv_report_shape():
+    import csv
+    import io
+
+    from patch_tuesday_mcp.tools.formatters import TRIAGE_COLUMNS
+
+    md = await msrc_search(format="markdown", limit=5)
+    assert "error" not in md, md.get("error")
+    assert md["format"] == "markdown"
+    assert md["markdown"].startswith("# Patch Tuesday Triage")
+    assert "| CVE | Title |" in md["markdown"]
+    # Total reflects the whole month; the table is limited to the page.
+    assert md["total_found"] >= len(md["vulnerabilities"])
+
+    out = await msrc_search(format="csv", limit=5)
+    assert out["format"] == "csv"
+    assert out["columns"] == TRIAGE_COLUMNS
+    rows = list(csv.DictReader(io.StringIO(out["csv"])))
+    assert len(rows) == len(out["vulnerabilities"])
+    for row in rows:
+        assert row["cve"].upper().startswith("CVE-")
+        assert list(row.keys()) == TRIAGE_COLUMNS
+
