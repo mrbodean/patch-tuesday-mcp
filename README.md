@@ -21,6 +21,7 @@ Patch Tuesday MCP Server bridges Microsoft's official CVRF security update API a
 - **Find zero-click, internet-reachable criticals** - "Which Critical CVEs are network-reachable with no privileges and no user interaction?" — filter on the parsed CVSS attack vector, privileges, and user-interaction fields
 - **Jump straight to authoritative sources** - every CVE detail carries ready-to-open MSRC, NVD, EPSS, and (when listed) CISA KEV reference links
 - **Avoid stale patches** - "Is KB5087538 superseded by anything newer?" — walks Microsoft's supersedence links
+- **Get mitigations when there's no patch yet** - "Are there mitigations or workarounds for CVE-2026-47291?" — surfaces Microsoft's mitigation, workaround, and will-not-fix guidance
 - **Prioritize patching** - Results are sorted most-urgent-first: KEV/exploited, then EPSS, then severity, then CVSS
 
 Perfect for security analysts, sysadmins, and IT professionals who triage Microsoft security updates every month — without clicking through the Security Update Guide portal.
