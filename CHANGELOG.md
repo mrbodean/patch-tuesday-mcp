@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Mitigations & workarounds (Epic 3)** — `msrc_search` now accepts
+  `include_guidance=True` on CVE lookups, which adds a `guidance` list to the
+  detail output containing any Microsoft-provided mitigations, workarounds, and
+  will-not-fix advisories (each with `type`, `description`, and optional `url`).
+  Non-vendor-fix CVRF remediations (types 0/1/4) are parsed into a new
+  `GuidanceEntry` model; advisory text is HTML-stripped and de-duplicated across
+  products. Vendor-fix KB remediations (type 2) continue to populate
+  `kb_articles` unchanged, and guidance is omitted from default/summary output
+  to keep responses lean.
 - **CVSS exposure filters (Epic 2)** — `msrc_search` now accepts `attack_vector`
   (N/A/L/P), `privileges_required` (N/L/H), `user_interaction` (N/R), and
   `scope` (U/C) filters that match the parsed CVSS v3.x base vector. This makes

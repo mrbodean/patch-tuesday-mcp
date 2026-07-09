@@ -75,3 +75,18 @@ async def test_live_invalid_vector_value_is_rejected():
     result = await msrc_search(attack_vector="Z")
     assert result["error_kind"] == "invalid_input"
     assert "Invalid attack_vector" in result["error"]
+
+
+async def test_live_include_guidance_shape():
+    latest = await msrc_search(limit=100)
+    assert latest["vulnerabilities"], "no vulnerabilities in latest release"
+    cve = latest["vulnerabilities"][0]["cve"]
+
+    # Guidance is opt-in and may legitimately be absent for a given CVE; when
+    # present, every entry must carry a known type and non-empty description.
+    detail = (await msrc_search(cve=cve, include_guidance=True))["vulnerabilities"][0]
+    default = (await msrc_search(cve=cve))["vulnerabilities"][0]
+    assert "guidance" not in default
+    for entry in detail.get("guidance", []):
+        assert entry["type"] in {"mitigation", "workaround", "will_not_fix"}
+        assert entry["description"]
