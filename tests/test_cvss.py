@@ -67,3 +67,12 @@ def test_malformed_values_are_dropped_not_raised():
 def test_garbage_returns_none():
     assert parse_cvss_vector("not a vector") is None
     assert parse_cvss_vector("CVSS:3.1/") is None
+
+
+def test_metric_segment_without_colon_is_skipped():
+    # A stray segment carrying no "metric:value" colon is ignored; valid
+    # metrics around it still parse.
+    parsed = parse_cvss_vector("CVSS:3.1/AV:N/garbage/AC:L/PR:N/UI:N")
+    assert parsed is not None
+    assert parsed.attack_vector == "N"
+    assert parsed.attack_complexity == "L"

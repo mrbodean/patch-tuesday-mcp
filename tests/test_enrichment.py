@@ -182,3 +182,66 @@ async def test_epss_freshness_metadata(mock_api):
     empty = enrichment.epss_freshness(["CVE-2026-00000"])
     assert empty["available"] is False
 
+
+# --- _get_json HTTP-level error handling ---
+
+
+class _FakeResponse:
+    def __init__(self, status_code=200, payload=None, bad_json=False):
+        self.status_code = status_code
+        self._payload = payload if payload is not None else {}
+        self._bad_json = bad_json
+
+    def json(self):
+        if self._bad_json:
+            raise ValueError("no JSON could be decoded")
+        return self._payload
+
+
+def _patch_client(monkeypatch, response=None, raise_exc=None):
+    class _FakeClient:
+        async def get(self, url, headers=None, timeout=None):
+            if raise_exc is not None:
+                raise raise_exc
+            return response
+
+    monkeypatch.setattr(enrichment.http_client, "get_client", lambda: _FakeClient())
+
+
+async def test_get_json_raises_on_non_200(monkeypatch):
+    _patch_client(monkeypatch, response=_FakeResponse(status_code=503))
+    with pytest.raises(EnrichmentError, match="HTTP 503"):
+        await enrichment._get_json("https://example.test/data")
+
+
+async def test_get_json_raises_on_invalid_json(monkeypatch):
+    _patch_client(monkeypatch, response=_FakeResponse(status_code=200, bad_json=True))
+    with pytest.raises(EnrichmentError, match="invalid JSON"):
+        await enrichment._get_json("https://example.test/data")
+
+
+async def test_get_json_raises_on_transport_error(monkeypatch):
+    import httpx
+
+    _patch_client(monkeypatch, raise_exc=httpx.ConnectError("boom"))
+    with pytest.raises(EnrichmentError, match="request failed"):
+        await enrichment._get_json("https://example.test/data")
+
+
+async def test_epss_skips_malformed_score_entries(monkeypatch):
+    async def get_json(url, timeout=30.0):
+        return {
+            "status": "OK",
+            "data": [
+                {"cve": "CVE-2026-1", "epss": "0.4", "percentile": "0.7"},
+                {"cve": "CVE-2026-2", "epss": "not-a-number", "percentile": "0.7"},
+                {"cve": "CVE-2026-3", "percentile": "0.7"},  # missing epss key
+                {"epss": "0.4", "percentile": "0.7"},  # missing cve key
+            ],
+        }
+
+    monkeypatch.setattr(enrichment, "_get_json", get_json)
+    result = await fetch_epss(["CVE-2026-1", "CVE-2026-2", "CVE-2026-3"])
+    # Only the well-formed entry survives; malformed ones are dropped silently.
+    assert result == {"CVE-2026-1": (0.4, 0.7)}
+

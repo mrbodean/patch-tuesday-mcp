@@ -81,3 +81,21 @@ def test_empty_profile_entry_raises(monkeypatch, tmp_path):
     monkeypatch.setenv("MSRC_PROFILES_PATH", str(path))
     with pytest.raises(profiles.ProfileError):
         profiles.load_profiles()
+
+
+def test_non_object_root_raises(monkeypatch, tmp_path):
+    path = tmp_path / "bad.json"
+    # Root must be a JSON object of name -> profile, not a list.
+    path.write_text(json.dumps(["identity-core"]), encoding="utf-8")
+    monkeypatch.setenv("MSRC_PROFILES_PATH", str(path))
+    with pytest.raises(profiles.ProfileError, match="must be a JSON object"):
+        profiles.load_profiles()
+
+
+def test_non_object_profile_entry_raises(monkeypatch, tmp_path):
+    path = tmp_path / "bad.json"
+    # Each profile entry must be an object, not a bare string.
+    path.write_text(json.dumps({"x": "Widget"}), encoding="utf-8")
+    monkeypatch.setenv("MSRC_PROFILES_PATH", str(path))
+    with pytest.raises(profiles.ProfileError, match="must be an object"):
+        profiles.load_profiles()
