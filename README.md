@@ -166,6 +166,8 @@ and a briefing. It accepts two optional arguments: `product_profile` (scope the
 whole workflow to a watchlist) and `month` (triage a specific release). No new
 tools are introduced — the prompt only orchestrates `msrc_search` calls.
 
+A portable, plain-text copy of this prompt lives under [`prompts/`](prompts/README.md) so the workflow can be used **independently of the server** (pasted into any agent or runbook that can call `msrc_search`).
+
 ## Prompt Examples
 
 Once connected to an MCP client, you can ask questions like:

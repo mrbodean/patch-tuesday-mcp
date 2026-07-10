@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only the single `msrc_search` tool — no new tools are introduced. It accepts
   optional `product_profile` (scope the workflow to a watchlist) and `month`
   arguments. Organization-specific watchlist names are supplied by the caller,
-  not hard-coded.
+  not hard-coded. A portable, plain-text copy of the prompt lives under
+  `prompts/` for standalone use independent of the server.
 - **Product profile / watchlist filtering (Epic 1)** — `msrc_search` gains
   additive, backward-compatible filters to scope results to the products an
   organization runs: `product_profile="<name>"` (built-in `identity-core` /

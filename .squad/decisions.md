@@ -11,7 +11,10 @@ exploited, network/no-auth/no-UI criticals, identity-adjacent, endpoint/Intune,
 briefing). No new tools; no org-specific watchlist names hard-coded (caller
 supplies the profile). Complements the Epic 1 `patch-tuesday-triage` skill — the
 skill is agent-facing procedural knowledge, the prompt is the MCP-native
-client-selectable template. Tested via FastMCP Client (registered, listable,
+client-selectable template. A portable, server-independent copy of the prompt
+also lives under top-level `prompts/monthly_triage.md` (with `prompts/README.md`
+documenting standalone use) so it can ship in the upstream PR and be used without
+the server. Tested via FastMCP Client (registered, listable,
 renders with/without scope). Branch `feat/epic-6-triage-prompt` (stacked on
 Epic 1). All epics in the PRD are now delivered.
 
