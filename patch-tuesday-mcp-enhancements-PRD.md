@@ -84,6 +84,7 @@ A Microsoft security and identity practitioner responsible for monthly Patch Tue
 
 **Priority:** P0  
 **Lane:** Local wrapper / extension first; upstream should only receive generic hooks if accepted.  
+**Status:** ✅ Delivered — additive `product_profile` (named, local; built-ins + `MSRC_PROFILES_PATH` override), `products=[...]`, `product_families=[...]` filters on `msrc_search` (union match, local only, no telemetry/API leakage); unknown/invalid profile → `invalid_input` (no broad fallback); companion `patch-tuesday-triage` agent skill; generic list filters are the upstream-friendly hook, named profiles stay local.  
 **Effort:** M  
 **Primary touchpoints:** `tools/search.py::msrc_search`, `tools/search.py::_search_impl`, `tools/search.py::_filter_vulnerabilities`, `models/vulnerability.py::Vulnerability.to_summary_dict`, local wrapper package config loader.
 

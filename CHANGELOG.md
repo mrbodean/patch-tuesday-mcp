@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Product profile / watchlist filtering (Epic 1)** — `msrc_search` gains
+  additive, backward-compatible filters to scope results to the products an
+  organization runs: `product_profile="<name>"` (built-in `identity-core` /
+  `endpoint` / `server-infrastructure`, extensible via a local JSON file at
+  `MSRC_PROFILES_PATH`) plus ad-hoc `products=[...]` and `product_families=[...]`
+  lists. A vulnerability is kept if it matches **any** listed product or family
+  (union). Matching is entirely local — profile contents are never sent to
+  MSRC, FIRST.org, CISA, or telemetry (telemetry records only which parameters
+  were used, never their values). An unknown profile, or a missing/invalid
+  `MSRC_PROFILES_PATH`, returns a clear `invalid_input` error instead of falling
+  back to a broad, unscoped result. Ships a companion `patch-tuesday-triage`
+  agent skill documenting the watchlists and the monthly triage workflow (no new
+  MCP tool); a portable, server-independent copy lives under `skills/` for
+  standalone deployment. Default behavior is unchanged when no profile/product
+  filter is supplied.
 - **HTTP self-host hardening (Epic 9)** — the HTTP transport now supports a
   configurable CORS allowlist (`MCP_CORS_ORIGINS`, comma-separated; defaults to
   the permissive `*` for local dev) and trusted-proxy client-IP handling for

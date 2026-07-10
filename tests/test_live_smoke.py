@@ -152,3 +152,15 @@ async def test_live_trend_search_across_recent_months():
 
 
 
+
+
+async def test_live_product_profile_scopes_results():
+    # A built-in profile must run without error and only return in-scope vulns.
+    scoped = await msrc_search(product_profile="identity-core", limit=20)
+    assert "error" not in scoped, scoped.get("error")
+    assert scoped["filters_applied"].get("product_profile") == "identity-core"
+    # An unknown profile is a clear local error, not a broad result set.
+    bad = await msrc_search(product_profile="no-such-profile")
+    assert bad["error_kind"] == "invalid_input"
+    assert bad["vulnerabilities"] == []
+

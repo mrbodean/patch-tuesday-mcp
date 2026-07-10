@@ -15,6 +15,7 @@ Patch Tuesday MCP Server bridges Microsoft's official CVRF security update API a
 - **Look up any CVE** - "Tell me about CVE-2026-41108" (KBs, affected products, CVSS, description)
 - **Map KBs to CVEs** - "Which vulnerabilities does KB5094123 fix?"
 - **Filter by product** - "What Critical CVEs affect Windows Server 2022 this month?"
+- **Scope to a product watchlist** - "Show me this month's Critical CVEs across my estate" (`product_profile="identity-core"`, or ad-hoc `products=[...]` / `product_families=[...]`) — filters locally to the products/families you care about; watchlists never leave your host
 - **Track zero-days** - "Were any publicly disclosed vulnerabilities patched in April?"
 - **See what's confirmed exploited** - "Which of this month's CVEs are on the CISA KEV list?" — with federal remediation due dates
 - **Rank by exploitation probability** - "Show me CVEs with EPSS above 50%" — daily FIRST.org exploit prediction scores
@@ -131,7 +132,28 @@ pip install --upgrade patch-tuesday-mcp
 
 ## Features
 
-- **msrc_search** – Search and filter Microsoft security updates by keyword, CVE, KB number, month, product, severity, CVSS score, exploited-in-the-wild status, or public disclosure. When no month is given, results default to the most recent release whose Patch Tuesday has already occurred — the upcoming month's pre-release document (early Chromium/out-of-band entries only) is skipped by default and available explicitly via `month=`. Results are enriched with **EPSS scores** (FIRST.org 30-day exploitation probability, `min_epss=0.5` filter) and **CISA KEV** catalog status with federal remediation due dates (`kev=True` filter) — both public, keyless sources. Filter by the **parsed CVSS v3.x exposure fields** — `attack_vector` (N/A/L/P), `privileges_required` (N/L/H), `user_interaction` (N/R), and `scope` (U/C) — to isolate, for example, network-reachable zero-click criticals; matching results surface a structured `cvss` object broken out from the raw vector string. Every CVE detail also includes a **references** block of ready-to-open links (MSRC update guide, NVD, EPSS API, and the CISA KEV catalog when the CVE is listed). Add `include_chain=True` to a KB lookup to walk Microsoft-stated **supersedence chains** (which KBs it replaces, newest → oldest). Add `include_guidance=True` to a CVE lookup to surface Microsoft-provided **mitigations, workarounds, and will-not-fix advisories** alongside the vendor-fix KBs. Pass `format="markdown"` or `format="csv"` to a monthly/filtered search to get an additive **triage briefing** — a prioritized executive summary and table (Markdown) or a spreadsheet-ready export with stable columns (CSV) — rendered from the same urgency ranking; the JSON `vulnerabilities` list is always included. Use `force_refresh=True` to bypass the in-process caches and re-fetch the MSRC document and EPSS/KEV enrichment for the request, and `include_freshness=True` to add a **freshness** block reporting the cache age and TTL of the MSRC document and enrichment data. Search a **historical range** instead of a single month with `months_back=N` (the N most recent released months) or `start_month`/`end_month` — the response aggregates matching CVEs across the range and adds per-month **trend** counts; ranges are capped at 12 months and reuse the existing cache/concurrency controls. Set `include_stats=True` for aggregate counts (by severity, impact, product family, exploited, KEV). Use `limit=0` with `include_stats=True` for a stats-only month overview.
+- **msrc_search** – Search and filter Microsoft security updates by keyword, CVE, KB number, month, product, severity, CVSS score, exploited-in-the-wild status, or public disclosure. Scope a search to a **product watchlist** with `product_profile="<name>"` (built-in `identity-core` / `endpoint` / `server-infrastructure`, extensible via a local JSON file at `MSRC_PROFILES_PATH`) or ad-hoc `products=[...]` / `product_families=[...]` lists — a vulnerability is kept if it matches any listed product or family, and watchlist matching happens entirely locally (contents are never sent to MSRC, FIRST.org, CISA, or telemetry). When no month is given, results default to the most recent release whose Patch Tuesday has already occurred — the upcoming month's pre-release document (early Chromium/out-of-band entries only) is skipped by default and available explicitly via `month=`. Results are enriched with **EPSS scores** (FIRST.org 30-day exploitation probability, `min_epss=0.5` filter) and **CISA KEV** catalog status with federal remediation due dates (`kev=True` filter) — both public, keyless sources. Filter by the **parsed CVSS v3.x exposure fields** — `attack_vector` (N/A/L/P), `privileges_required` (N/L/H), `user_interaction` (N/R), and `scope` (U/C) — to isolate, for example, network-reachable zero-click criticals; matching results surface a structured `cvss` object broken out from the raw vector string. Every CVE detail also includes a **references** block of ready-to-open links (MSRC update guide, NVD, EPSS API, and the CISA KEV catalog when the CVE is listed). Add `include_chain=True` to a KB lookup to walk Microsoft-stated **supersedence chains** (which KBs it replaces, newest → oldest). Add `include_guidance=True` to a CVE lookup to surface Microsoft-provided **mitigations, workarounds, and will-not-fix advisories** alongside the vendor-fix KBs. Pass `format="markdown"` or `format="csv"` to a monthly/filtered search to get an additive **triage briefing** — a prioritized executive summary and table (Markdown) or a spreadsheet-ready export with stable columns (CSV) — rendered from the same urgency ranking; the JSON `vulnerabilities` list is always included. Use `force_refresh=True` to bypass the in-process caches and re-fetch the MSRC document and EPSS/KEV enrichment for the request, and `include_freshness=True` to add a **freshness** block reporting the cache age and TTL of the MSRC document and enrichment data. Search a **historical range** instead of a single month with `months_back=N` (the N most recent released months) or `start_month`/`end_month` — the response aggregates matching CVEs across the range and adds per-month **trend** counts; ranges are capped at 12 months and reuse the existing cache/concurrency controls. Set `include_stats=True` for aggregate counts (by severity, impact, product family, exploited, KEV). Use `limit=0` with `include_stats=True` for a stats-only month overview.
+
+## Product profiles (watchlists)
+
+Scope any search to the products you actually run. Pass `product_profile="identity-core"` (built-in profiles: `identity-core`, `endpoint`, `server-infrastructure`) or supply ad-hoc `products=["Exchange Server", "Windows Server"]` / `product_families=["Windows", "Azure"]`. A vulnerability is kept if it matches **any** listed product or family. All matching is local — profile contents are never transmitted to MSRC, FIRST.org, CISA, or telemetry.
+
+Override or extend the built-ins by pointing `MSRC_PROFILES_PATH` at a JSON file:
+
+```json
+{
+  "my-estate": {
+    "families": ["Windows", "Azure"],
+    "products": ["Exchange Server", "Microsoft Entra"]
+  }
+}
+```
+
+Each entry may set `products` and/or `families` (case-insensitive partial matchers). A file entry with the same name as a built-in replaces it. An unknown `product_profile`, or a missing/invalid `MSRC_PROFILES_PATH`, returns a clear `invalid_input` error rather than falling back to a broad, unscoped result.
+
+### Companion triage skill
+
+A portable [agent skill](skills/README.md) — `patch-tuesday-triage` — teaches an AI agent how to drive `msrc_search` through the monthly workflow (which searches to run, in what order, how to prioritize). It's plain Markdown and can be **deployed independently of this server**: copy `skills/patch-tuesday-triage/` into your agent's skills directory (e.g. `~/.copilot/skills/`). See [`skills/README.md`](skills/README.md) for deployment details.
 
 ## Prompt Examples
 
@@ -151,7 +173,8 @@ Once connected to an MCP client, you can ask questions like:
 12. **Triage report**: "Give me this month's Critical CVEs as a Markdown briefing" (or "…export them as CSV")
 13. **Fresh data on demand**: "Re-pull this month's updates fresh and tell me how current the data is" (`force_refresh=True`, `include_freshness=True`)
 14. **Historical trends**: "How many HTTP.sys RCE CVEs shipped over the last 6 months?" (`query="HTTP.sys"`, `months_back=6`)
-15. **Supersedence**: "Is KB5087538 superseded by anything newer?"
+15. **Product watchlist**: "Show me this month's Critical CVEs across my estate" (`product_profile="identity-core"`, `severity="Critical"`)
+16. **Supersedence**: "Is KB5087538 superseded by anything newer?"
 
 ## Usage
 
