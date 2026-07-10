@@ -151,6 +151,10 @@ Override or extend the built-ins by pointing `MSRC_PROFILES_PATH` at a JSON file
 
 Each entry may set `products` and/or `families` (case-insensitive partial matchers). A file entry with the same name as a built-in replaces it. An unknown `product_profile`, or a missing/invalid `MSRC_PROFILES_PATH`, returns a clear `invalid_input` error rather than falling back to a broad, unscoped result.
 
+### Companion triage skill
+
+A portable [agent skill](skills/README.md) — `patch-tuesday-triage` — teaches an AI agent how to drive `msrc_search` through the monthly workflow (which searches to run, in what order, how to prioritize). It's plain Markdown and can be **deployed independently of this server**: copy `skills/patch-tuesday-triage/` into your agent's skills directory (e.g. `~/.copilot/skills/`). See [`skills/README.md`](skills/README.md) for deployment details.
+
 ## Prompt Examples
 
 Once connected to an MCP client, you can ask questions like:

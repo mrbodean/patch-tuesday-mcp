@@ -21,8 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MSRC_PROFILES_PATH`, returns a clear `invalid_input` error instead of falling
   back to a broad, unscoped result. Ships a companion `patch-tuesday-triage`
   agent skill documenting the watchlists and the monthly triage workflow (no new
-  MCP tool). Default behavior is unchanged when no profile/product filter is
-  supplied.
+  MCP tool); a portable, server-independent copy lives under `skills/` for
+  standalone deployment. Default behavior is unchanged when no profile/product
+  filter is supplied.
 - **HTTP self-host hardening (Epic 9)** — the HTTP transport now supports a
   configurable CORS allowlist (`MCP_CORS_ORIGINS`, comma-separated; defaults to
   the permissive `*` for local dev) and trusted-proxy client-IP handling for
