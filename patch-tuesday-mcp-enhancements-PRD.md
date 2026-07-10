@@ -259,6 +259,7 @@ Can follow Epic 2 and precede Epic 4. Trend report mode should be added once Epi
 
 **Priority:** P2  
 **Lane:** Upstream PR if lightweight; local wrapper otherwise  
+**Status:** ✅ Delivered — FastMCP prompt `monthly_triage` (in `tools/prompts.py`, registered in `server.py`) guiding the single-tool workflow (zero-days, KEV, exploited, network/no-auth/no-UI criticals, identity-adjacent, endpoint/Intune, briefing); optional `product_profile`/`month` args; no org-specific names hard-coded; no new tools.  
 **Effort:** S  
 **Primary touchpoints:** `server.py` FastMCP registration, possible new module `prompts.py` or `resources.py`, README documentation.
 

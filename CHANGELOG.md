@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Monthly triage prompt template (Epic 6)** — the server now registers an MCP
+  prompt, `monthly_triage`, that guides clients through the analyst workflow
+  (publicly disclosed zero-days, CISA KEV, exploited, network/no-auth/no-UI
+  criticals, identity-adjacent products, endpoint/Intune, and a briefing) using
+  only the single `msrc_search` tool — no new tools are introduced. It accepts
+  optional `product_profile` (scope the workflow to a watchlist) and `month`
+  arguments. Organization-specific watchlist names are supplied by the caller,
+  not hard-coded. A portable, plain-text copy of the prompt lives under
+  `prompts/` for standalone use independent of the server.
 - **Product profile / watchlist filtering (Epic 1)** — `msrc_search` gains
   additive, backward-compatible filters to scope results to the products an
   organization runs: `product_profile="<name>"` (built-in `identity-core` /
